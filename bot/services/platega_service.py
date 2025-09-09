@@ -542,4 +542,108 @@ async def platega_webhook_route(request: web.Request):
     async with payment_processing_lock:
         async with async_session_factory() as session:
             try:
-               
+                if status == STATUS_CONFIRMED:
+                    await _process_platega_confirmed(
+                        session=session,
+                        bot=bot,
+                        i18n=i18n,
+                        settings=settings,
+                        subscription_service=subscription_service,
+                        referral_service=referral_service,
+                        event=event,
+                    )
+                    await session.commit()
+                elif status in (STATUS_CANCELED, STATUS_FAILED, STATUS_EXPIRED):
+                    await _process_platega_cancelled(
+                        session=session, bot=bot, i18n=i18n, settings=settings, event=event
+                    )
+                    await session.commit()
+                else:
+                    logging.info(
+                        f"Platega webhook: transaction {tx_id} status={status}"
+                    )
+            except Exception as e:
+                await session.rollback()
+                logging.error(
+                    f"Platega webhook: processing error for {tx_id}: {e}",
+                    exc_info=True,
+                )
+                return web.Response(status=200, text="ok_internal_error_logged")
+
+    return web.Response(status=200, text="ok")
+
+
+# ------------------------ Хэндлер для UI (кнопка оплатить) ------------------------
+
+async def pay_platega_flow(
+    callback_event,
+    i18n_data: Dict[str, Any],
+    settings: Settings,
+    platega_service: "PlategaService",
+    session: AsyncSession,
+):
+    current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
+    i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
+    _ = lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs) if i18n else key
+
+    if not i18n or not getattr(callback_event, "message", None):
+        try:
+            await callback_event.answer(_("error_occurred_try_again"), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if not platega_service or not platega_service.configured:
+        await callback_event.message.edit_text(_("payment_service_unavailable"))
+        try:
+            await callback_event.answer(_("payment_service_unavailable_alert"), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    try:
+        _, payload = callback_event.data.split(":", 1)
+        months_str, price_str = payload.split(":")
+        months = int(months_str)
+        amount_rub = float(price_str)
+    except Exception:
+        logging.error(f"pay_platega: bad callback data -> {callback_event.data}")
+        try:
+            await callback_event.answer(_("error_try_again"), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    user_id = callback_event.from_user.id
+    description = _("payment_description_subscription", months=months)
+
+    payment_url = await platega_service.create_invoice(
+        session=session,
+        user_id=user_id,
+        months=months,
+        amount_rub=amount_rub,
+        description=description,
+        payment_method=None,
+    )
+
+    if payment_url:
+        try:
+            await callback_event.message.edit_text(
+                _("payment_link_message", months=months),
+                reply_markup=get_payment_url_keyboard(payment_url, current_lang, i18n),
+                disable_web_page_preview=False,
+            )
+        except Exception as e:
+            logging.warning(f"pay_platega: edit_text failed: {e}; sending new message")
+            await callback_event.message.answer(
+                _("payment_link_message", months=months),
+                reply_markup=get_payment_url_keyboard(payment_url, current_lang, i18n),
+                disable_web_page_preview=False,
+            )
+    else:
+        await callback_event.message.edit_text(_("error_payment_gateway"))
+
+    try:
+        await callback_event.answer()
+    except Exception:
+        pass
