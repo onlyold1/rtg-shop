@@ -35,6 +35,7 @@ from bot.services.promo_code_service import PromoCodeService
 from bot.services.stars_service import StarsService
 from bot.services.tribute_service import TributeService, tribute_webhook_route
 from bot.services.crypto_pay_service import CryptoPayService, cryptopay_webhook_route
+from bot.services.platega_service import PlategaService, platega_webhook_route
 
 from bot.handlers.user import payment as user_payment_webhook_module
 from bot.handlers.admin.sync_admin import perform_sync
@@ -206,6 +207,7 @@ async def on_shutdown_configured(dispatcher: Dispatcher):
         "stars_service",
         "subscription_service",
         "referral_service",
+        "platega_service",
     ):
         await close_service(service_key)
 
@@ -281,6 +283,7 @@ async def run_bot(settings_param: Settings):
     logging.info(f"--- Bot Run Mode Decision ---")
     logging.info(f"Configured WEBHOOK_BASE_URL: '{tg_webhook_base}' -> Webhook Mode: ENABLED")
     logging.info(f"YooKassa webhook path: '{settings_param.yookassa_webhook_path}'")
+    logging.info(f"Platega callback path: '{settings_param.platega_webhook_path}'")
     logging.info(f"Decision: Run AIOHTTP server: ENABLED (required for webhooks)")
     logging.info(f"--- End Bot Run Mode Decision ---")
 
