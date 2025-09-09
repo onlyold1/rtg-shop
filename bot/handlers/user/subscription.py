@@ -13,6 +13,7 @@ from bot.keyboards.inline.user_keyboards import (
     get_payment_url_keyboard, get_back_to_main_menu_markup)
 from bot.services.yookassa_service import YooKassaService
 from bot.services.platega_service import PlategaService
+from bot.services.platega_service import pay_platega_flow
 from bot.services.stars_service import StarsService
 from bot.services.crypto_pay_service import CryptoPayService
 from bot.services.subscription_service import SubscriptionService
@@ -469,10 +470,14 @@ async def pay_yk_callback_handler(
         pass
 
 
-@router.callback_query(F.data.startswith("pay_crypto:"))
-async def pay_crypto_callback_handler(
-        callback: types.CallbackQuery, settings: Settings, i18n_data: dict,
-        cryptopay_service: CryptoPayService, session: AsyncSession):
+@router.callback_query(F.data.startswith("pay_platega:"))
+async def pay_platega_callback_handler(
+    callback: types.CallbackQuery,
+    settings: Settings,
+    i18n_data: dict,
+    platega_service: PlategaService,
+    session: AsyncSession,
+):
     current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
     i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
     get_text = lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs) if i18n else key
@@ -484,7 +489,7 @@ async def pay_crypto_callback_handler(
             pass
         return
 
-    if not cryptopay_service or not cryptopay_service.configured:
+    if not platega_service or not platega_service.configured:
         await callback.message.edit_text(get_text("payment_service_unavailable"))
         try:
             await callback.answer(get_text("payment_service_unavailable_alert"), show_alert=True)
@@ -493,35 +498,19 @@ async def pay_crypto_callback_handler(
         return
 
     try:
-        _, data_payload = callback.data.split(":", 1)
-        months_str, amount_str = data_payload.split(":")
-        months = int(months_str)
-        amount_val = float(amount_str)
-    except (ValueError, IndexError):
-        logging.error(f"Invalid pay_crypto data in callback: {callback.data}")
+        # Делегируем в общий flow
+        await pay_platega_flow(callback, i18n_data, settings, platega_service, session)
+    except Exception as e:
+        logging.error(f"Error in pay_platega_callback_handler: {e}", exc_info=True)
+        try:
+            await callback.message.edit_text(get_text("error_payment_gateway"))
+        except Exception:
+            pass
         try:
             await callback.answer(get_text("error_try_again"), show_alert=True)
         except Exception:
             pass
-        return
 
-    user_id = callback.from_user.id
-    description = get_text("payment_description_subscription", months=months)
-
-    invoice_url = await cryptopay_service.create_invoice(
-        session, user_id, months, amount_val, description)
-    if invoice_url:
-        await callback.message.edit_text(
-            get_text("payment_link_message", months=months),
-            reply_markup=get_payment_url_keyboard(invoice_url, current_lang, i18n),
-            disable_web_page_preview=False,
-        )
-    else:
-        await callback.message.edit_text(get_text("error_payment_gateway"))
-    try:
-        await callback.answer()
-    except Exception:
-        pass
 
 
 @router.callback_query(F.data == "main_action:subscribe")
