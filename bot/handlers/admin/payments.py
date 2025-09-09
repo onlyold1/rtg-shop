@@ -54,7 +54,8 @@ def format_payment_text(payment: Payment, i18n: JsonI18n, lang: str) -> str:
         'yookassa': 'YooKassa',
         'tribute': 'Tribute', 
         'telegram_stars': 'Telegram Stars',
-        'cryptopay': 'CryptoPay'
+        'cryptopay': 'CryptoPay',
+        'platega': 'Platega',
     }.get(payment.provider, payment.provider or 'Unknown')
     
     return (
