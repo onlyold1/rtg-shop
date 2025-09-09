@@ -162,9 +162,15 @@ async def show_statistics_handler(callback: types.CallbackQuery,
         stats_text_parts.append(
             f"\n<b>{_('admin_stats_recent_payments_header')}</b>")
         for payment in last_payments_models:
-            status_emoji = "✅" if payment.status == 'succeeded' else (
-                "⏳" if payment.status == 'pending'
-                or payment.status == 'pending_yookassa' else "❌")
+            pending_statuses = {'requires_action', 'pending', 'pending_yookassa', 'PENDING'}
+            status_emoji = (
+                "✅" if payment.status == 'succeeded'
+                else "⏳" if payment.status in pending_statuses
+                else "❌"
+            )
+
+            display_status = {'PENDING': 'requires_action'}.get(payment.status, payment.status)
+
 
             user_info = f"User {payment.user_id}"
             if payment.user and payment.user.username:
@@ -181,7 +187,7 @@ async def show_statistics_handler(callback: types.CallbackQuery,
                   amount=payment.amount,
                   currency=payment.currency,
                   user_info=user_info,
-                  p_status=payment.status,
+                  p_status=display_status,
                   p_date=payment_date_str))
     else:
         stats_text_parts.append(f"\n{_('admin_stats_no_payments_found')}")
