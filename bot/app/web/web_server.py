@@ -19,6 +19,7 @@ async def build_and_start_web_app(
     app["dp"] = dp
     app["settings"] = settings
     app["async_session_factory"] = async_session_factory
+    app["db_session_factory"] = async_session_factory
     # Inject shared instances used by webhook handlers
     app["i18n"] = dp.get("i18n_instance")
     for key in (
@@ -30,6 +31,7 @@ async def build_and_start_web_app(
         "cryptopay_service",
         "tribute_service",
         "panel_webhook_service",
+        "platega_service",
     ):
         # Access dispatcher workflow_data directly to avoid sequence protocol issues
         if hasattr(dp, "workflow_data") and key in dp.workflow_data:  # type: ignore
@@ -50,6 +52,7 @@ async def build_and_start_web_app(
     from bot.services.tribute_service import tribute_webhook_route
     from bot.services.crypto_pay_service import cryptopay_webhook_route
     from bot.services.panel_webhook_service import panel_webhook_route
+    from bot.services.platega_service import platega_callback_handler
 
     tribute_path = settings.tribute_webhook_path
     if tribute_path.startswith("/"):
@@ -66,6 +69,11 @@ async def build_and_start_web_app(
     if settings.WEBHOOK_BASE_URL and yk_path and yk_path.startswith("/"):
         app.router.add_post(yk_path, yookassa_webhook_route)
         logging.info(f"YooKassa webhook route configured at: [POST] {yk_path}")
+
+    platega_path = getattr(settings, "platega_webhook_path", "/webhook/platega")
+    if platega_path and platega_path.startswith("/"):
+    app.router.add_post(platega_path, platega_callback_handler)
+    logging.info(f"Platega webhook route configured at: [POST] {platega_path}")
 
     panel_path = settings.panel_webhook_path
     if panel_path.startswith("/"):
