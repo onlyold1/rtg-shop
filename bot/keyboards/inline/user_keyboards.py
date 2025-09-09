@@ -133,7 +133,7 @@ def get_payment_method_keyboard(months: int, price: float,
         builder.button(text=_("pay_with_tribute_button"), url=tribute_url)
     if settings.PLATEGA_ENABLED:
         builder.button(text=_("pay_with_platega_button"),
-                       callback_data=f"pay_platega:{months}")
+                       callback_data=f"pay_platega:{months}:{price}")
     if settings.YOOKASSA_ENABLED:
         builder.button(text=_("pay_with_yookassa_button"),
                        callback_data=f"pay_yk:{months}:{price}")
