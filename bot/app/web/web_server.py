@@ -52,7 +52,7 @@ async def build_and_start_web_app(
     from bot.services.tribute_service import tribute_webhook_route
     from bot.services.crypto_pay_service import cryptopay_webhook_route
     from bot.services.panel_webhook_service import panel_webhook_route
-    from bot.services.platega_service import platega_callback_handler
+    from bot.services.platega_service import platega_webhook_route
 
     tribute_path = settings.tribute_webhook_path
     if tribute_path.startswith("/"):
@@ -70,9 +70,8 @@ async def build_and_start_web_app(
         app.router.add_post(yk_path, yookassa_webhook_route)
         logging.info(f"YooKassa webhook route configured at: [POST] {yk_path}")
 
-    platega_path = getattr(settings, "platega_webhook_path", "/webhook/platega")
-    if platega_path and platega_path.startswith("/"):
-    app.router.add_post(platega_path, platega_callback_handler)
+    platega_path = "/webhook/platega"
+    app.router.add_post(platega_path, platega_webhook_route)
     logging.info(f"Platega webhook route configured at: [POST] {platega_path}")
 
     panel_path = settings.panel_webhook_path
