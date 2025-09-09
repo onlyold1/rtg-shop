@@ -38,9 +38,9 @@ def format_payment_text(payment: Payment, i18n: JsonI18n, lang: str) -> str:
     """Format single payment info as text."""
     _ = lambda key, **kwargs: i18n.gettext(lang, key, **kwargs)
     
-    status_emoji = "✅" if payment.status == 'succeeded' else (
-        "⏳" if payment.status in ['pending', 'pending_yookassa'] else "❌"
-    )
+    pending_statuses = {'requires_action', 'pending', 'pending_yookassa', 'PENDING'}
+    status_emoji = "✅" if payment.status == 'succeeded' else ("⏳" if payment.status in pending_statuses else "❌")
+
     
     user_info = f"User {payment.user_id}"
     if payment.user and payment.user.username:
