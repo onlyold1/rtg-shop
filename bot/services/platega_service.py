@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 # These are referenced in your existing yookassa_service.py/tribute_service.py.
 # If paths differ, update the imports accordingly.
 try:
-    from db.dal import payment_dal  # expected to expose update_payment_status_by_db_id, find_by_provider_payment_id, link_provider_payment_id
+    from db.dal import payment_dal  # expected to expose update_provider_payment_and_status, get_payment_by_provider_payment_id, link_provider_payment_id
 except Exception:  # pragma: no cover - allow file to import standalone for review
     payment_dal = None  # type: ignore
 
@@ -305,12 +305,10 @@ class PlategaService:
         # Определяем наш payment_db_id.
         # Вариант 1: у вас есть DAL-функция поиска по provider_payment_id.
         payment_db_id = None
-        if payment_dal and hasattr(payment_dal, "find_by_provider_payment_id"):
+        if payment_dal and hasattr(payment_dal, "get_payment_by_provider_payment_id"):
             try:
                 async with db_session_factory() as session:  # type: AsyncSession
-                    rec = await payment_dal.find_by_provider_payment_id(
-                        session, provider="platega", provider_id=provider_payment_id
-                    )
+                    rec = await payment_dal.get_payment_by_provider_payment_id(session, provider_payment_id)
                     if rec:
                         payment_db_id = getattr(rec, "id", None)
             except Exception:
@@ -324,7 +322,7 @@ class PlategaService:
         # Обновляем статус в БД
         try:
             async with db_session_factory() as session:  # type: AsyncSession
-                updated = await payment_dal.update_payment_status_by_db_id(
+                updated = await payment_dal.update_provider_payment_and_status(
                     session,
                     payment_db_id=payment_db_id,
                     new_status=internal_status,
