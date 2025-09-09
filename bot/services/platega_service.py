@@ -1,470 +1,656 @@
-# platega_service.py
+# bot/services/platega_service.py
+
 import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import aiohttp
-from aiohttp import web, ClientTimeout
+from aiohttp import web
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-# === Project-specific imports (adjust paths to your project structure) ===
-# These are referenced in your existing yookassa_service.py/tribute_service.py.
-# If paths differ, update the imports accordingly.
-try:
-    from db.dal import payment_dal  # expected to expose update_provider_payment_and_status, get_payment_by_provider_payment_id, link_provider_payment_id
-except Exception:  # pragma: no cover - allow file to import standalone for review
-    payment_dal = None  # type: ignore
+from config.settings import Settings
+from bot.middlewares.i18n import JsonI18n
+from bot.services.subscription_service import SubscriptionService
+from bot.services.referral_service import ReferralService
+from bot.services.notification_service import NotificationService
+from db.dal import payment_dal, user_dal
 
-try:
-    from config.settings import Settings  # expected to contain PLATEGA_*
-except Exception:  # pragma: no cover
-    from dataclasses import dataclass
-    @dataclass
-    class Settings:  # fallback struct for local tests; replace with your real Settings
-        PLATEGA_BASE_URL: str = "https://app.platega.io"
-        PLATEGA_MERCHANT_ID: str = "00000000-0000-0000-0000-000000000000"
-        PLATEGA_API_SECRET: str = "changeme"
-        PLATEGA_CALLBACK_AUTH_CHECK: bool = True
-        HTTP_CLIENT_TIMEOUT_SEC: int = 15
+from bot.keyboards.inline.user_keyboards import get_payment_url_keyboard, get_connect_and_main_keyboard
 
+# --- Константы Platega API ---
+_PLATEGA_BASE_URL = "https://app.platega.io"
+_API_CREATE = "/transaction/process"
+_API_STATUS = "/transaction/{transaction_id}"
+_API_RATE = "/rates/payment_method_rate"
 
-logger = logging.getLogger("platega_service")
+# Возможные статусы от Platega:
+STATUS_PENDING = "PENDING"
+STATUS_CONFIRMED = "CONFIRMED"
+STATUS_EXPIRED = "EXPIRED"
+STATUS_CANCELED = "CANCELED"
+STATUS_FAILED = "FAILED"
 
-
-# === Payment method constants from docs ===
-class PlategaMethod:
-    SBP_P2P_RF_ONLY = 1          # поиск только реквизитов банков РФ
-    SBP_QR = 2                   # НСПК / QR
-    ALL_RU = 9                   # реквизиты СБП / карты РФ
-    CARD_RU_P2P = 10             # реквизиты только карт РФ
-    CARD_2DS_MIR = 11            # карточный 2дс, карты МИР
-    INTERNATIONAL = 12           # международный эквайринг
-
-
-@dataclass
-class CreatePaymentResult:
-    transaction_id: str
-    redirect_url: Optional[str]
-    status: str
-    expires_in: Optional[str]
-    raw: Dict[str, Any]
+# Блокировка последовательной обработки входящих вебхуков, чтобы не гонять конкурентные транзакции
+payment_processing_lock = asyncio.Lock()
 
 
 class PlategaService:
     """
-    Полноценная интеграция с Platega API.
-    Реализует:
-      - создание платежа (transaction/process)
-      - проверку статуса (transaction/{id})
-      - получение курсов (rates/payment_method_rate)
-      - приём callback’ов
+    Сервис-интеграция с Platega.
+
+    Использование:
+      1) create_invoice(...) -> вернёт URL для оплаты (и обновит запись Payment с provider_payment_id = transactionId)
+      2) platega_webhook_route(...) -> обработчик колбэка от Platega
+      3) get_status(...) -> получить текущий статус по transactionId
+      4) get_rate(...) -> получить курс для метода оплаты (опционально)
     """
 
     def __init__(
         self,
+        bot: Bot,
         settings: Settings,
-        bot: Optional[Bot] = None,
-        http_timeout_sec: Optional[int] = None,
-        session: Optional[aiohttp.ClientSession] = None,
-    ) -> None:
-        self.settings = settings
+        i18n: JsonI18n,
+        async_session_factory: sessionmaker,
+        subscription_service: SubscriptionService,
+        referral_service: ReferralService,
+    ):
         self.bot = bot
+        self.settings = settings
+        self.i18n = i18n
+        self.async_session_factory = async_session_factory
+        self.subscription_service = subscription_service
+        self.referral_service = referral_service
 
-        self.base_url = getattr(settings, "PLATEGA_BASE_URL", "https://app.platega.io").rstrip("/")
-        self.merchant_id = getattr(settings, "PLATEGA_MERCHANT_ID", None)
-        self.api_secret = getattr(settings, "PLATEGA_API_SECRET", None)
-        self.check_callback_auth = bool(getattr(settings, "PLATEGA_CALLBACK_AUTH_CHECK", True))
+        self._session: Optional[aiohttp.ClientSession] = None
 
-        timeout = http_timeout_sec or int(getattr(settings, "HTTP_CLIENT_TIMEOUT_SEC", 15))
-        self._own_client = False
-        if session is None:
-            self._own_client = True
-            self.http = aiohttp.ClientSession(timeout=ClientTimeout(total=timeout))
-        else:
-            self.http = session
+        # Конфигурация из Settings
+        self.enabled: bool = getattr(settings, "PLATEGA_ENABLED", False)
+        self.merchant_id: Optional[str] = getattr(settings, "PLATEGA_MERCHANT_ID", None)
+        self.secret: Optional[str] = getattr(settings, "PLATEGA_SECRET", None)
+        # Редиректы после оплаты (опционально)
+        self.return_url: Optional[str] = getattr(settings, "PLATEGA_RETURN_URL", None)
+        self.failed_url: Optional[str] = getattr(settings, "PLATEGA_FAILED_URL", None)
+        # Метод оплаты по умолчанию (по документации: 2 — SBP/QR)
+        self.default_payment_method: int = int(getattr(settings, "PLATEGA_DEFAULT_METHOD", 2))
 
-        if not self.merchant_id or not self.api_secret:
-            logger.warning("PlategaService: merchant credentials are not configured (PLATEGA_MERCHANT_ID / PLATEGA_API_SECRET)")
+    # --- Жизненный цикл HTTP-сессии ---
 
-    # --- lifecycle ---
-    async def aclose(self) -> None:
-        if self._own_client and not self.http.closed:
-            await self.http.close()
+    @property
+    def configured(self) -> bool:
+        return bool(self.enabled and self.merchant_id and self.secret)
 
-    # --- helpers ---
+    async def _ensure_http(self):
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=30)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            try:
+                await self._session.close()
+            except Exception as e:
+                logging.warning(f"PlategaService: error closing session: {e}")
+
+    # --- Вспомогательное ---
+
     def _auth_headers(self) -> Dict[str, str]:
         return {
             "Content-Type": "application/json",
             "X-MerchantId": str(self.merchant_id),
-            "X-Secret": str(self.api_secret),
+            "X-Secret": str(self.secret),
         }
 
-    @staticmethod
-    def map_status(provider_status: str) -> str:
-        """Map Platega status to internal status used in your system."""
-        s = (provider_status or "").upper()
-        if s in {"PENDING"}:
-            return "requires_action"
-        if s in {"CONFIRMED"}:
-            return "succeeded"
-        if s in {"CANCELED", "FAILED", "EXPIRED"}:
-            return "canceled"
-        # fallback for unknown
-        return "failed"
+    # --- Публичные методы сервиса ---
 
-    # === API calls ===
-    async def create_payment(
+    async def create_invoice(
         self,
-        *,
-        db_session_factory: Optional[sessionmaker] = None,
-        payment_db_id: Optional[int] = None,
-        amount: int = 0,
-        currency: str = "RUB",
-        payment_method: int = PlategaMethod.SBP_QR,
-        description: Optional[str] = None,
-        return_url: Optional[str] = None,
-        failed_url: Optional[str] = None,
-        payload: Optional[str] = None,
-        explicit_transaction_id: Optional[str] = None,
-    ) -> CreatePaymentResult:
+        session: AsyncSession,
+        user_id: int,
+        months: int,
+        amount_rub: float,
+        description: str,
+        payment_method: Optional[int] = None,
+    ) -> Optional[str]:
         """
-        Создаёт транзакцию и возвращает redirect URL (если есть).
-        Вы можете передать свой UUID (explicit_transaction_id), либо он будет сгенерирован.
-        Рекомендуется записывать связывание provider_id <-> payment_db_id.
+        Создаёт платеж в нашей БД и в Platega. Возвращает redirect URL для оплаты.
         """
-        txn_id = explicit_transaction_id or str(uuid.uuid4())
+        if not self.configured:
+            logging.error("PlategaService: not configured or disabled.")
+            return None
 
-        body = {
-            "paymentMethod": int(payment_method),
-            "id": txn_id,
-            "paymentDetails": {
-                "amount": amount,
-                "currency": currency,
-            },
+        pm = payment_method or self.default_payment_method
+        currency = "RUB"
+
+        # 1) создаём payment запись в БД
+        payment_record_data = {
+            "user_id": user_id,
+            "amount": float(amount_rub),
+            "currency": currency,
+            "status": "pending",  # единый pending
+            "description": description,
+            "subscription_duration_months": months,
+            "provider": "platega",
         }
-        if description:
-            body["description"] = description
-        if return_url:
-            body["return"] = return_url
-        if failed_url:
-            body["failedUrl"] = failed_url
-        if payload is not None:
-            # Рекомендуем положить сюда ваш internal payment_db_id для последующего маппинга в callback.
-            body["payload"] = payload
+        try:
+            db_payment = await payment_dal.create_payment_record(session, payment_record_data)
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            logging.error(f"PlategaService: failed to create DB payment for user {user_id}: {e}", exc_info=True)
+            return None
 
-        url = f"{self.base_url}/transaction/process"
-        logger.info("Platega create_payment: POST %s body=%s", url, body)
-
-        async with self.http.post(url, headers=self._auth_headers(), json=body) as resp:
-            text = await resp.text()
-            if resp.status >= 400:
-                logger.error("Platega create_payment error %s: %s", resp.status, text)
-                raise web.HTTPBadRequest(text=text)
-
-            # У Platega разные ответы для QR/P2P; приводим к общему виду
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError:
-                logger.error("Platega create_payment: invalid JSON response: %s", text)
-                raise web.HTTPInternalServerError(text="invalid provider response")
-
-        # Из ответа стараемся достать redirect/transactionId/status
-        transaction_id = data.get("transactionId") or data.get("id") or txn_id
-        redirect_url = data.get("redirect")
-        status = data.get("status") or "PENDING"
-        expires_in = data.get("expiresIn")
-
-        # Линкуем в БД provider_payment_id → наш payment_db_id
-        if db_session_factory and payment_db_id is not None and payment_dal and hasattr(payment_dal, "link_provider_payment_id"):
-            try:
-                async with db_session_factory() as session:  # type: AsyncSession
-                    await payment_dal.link_provider_payment_id(
-                        session,
-                        payment_db_id=payment_db_id,
-                        provider="platega",
-                        provider_payment_id=transaction_id,
-                    )
-            except Exception:
-                logger.exception("Platega create_payment: failed to link provider_payment_id")
-
-        return CreatePaymentResult(
-            transaction_id=transaction_id,
-            redirect_url=redirect_url,
-            status=status,
-            expires_in=expires_in,
-            raw=data,
+        # 2) вызываем Platega API на создание транзакции
+        await self._ensure_http()
+        tx_uuid = str(uuid.uuid4())
+        payload_str = json.dumps(
+            {
+                "user_id": user_id,
+                "payment_db_id": db_payment.payment_id,
+                "months": months,
+            },
+            ensure_ascii=False,
         )
 
-    async def get_status(self, transaction_id: str) -> Dict[str, Any]:
-        url = f"{self.base_url}/transaction/{transaction_id}"
-        logger.debug("Platega get_status: GET %s", url)
+        body = {
+            "paymentMethod": pm,
+            "id": tx_uuid,  # UUID транзакции
+            "paymentDetails": {
+                "amount": int(amount_rub) if amount_rub == int(amount_rub) else amount_rub,
+                "currency": currency,
+            },
+            "description": description,
+            "return": self.return_url or f"https://t.me/{(await self._safe_username())}",
+            "failedUrl": self.failed_url or f"https://t.me/{(await self._safe_username())}",
+            "payload": payload_str,
+        }
 
-        async with self.http.get(url, headers=self._auth_headers()) as resp:
-            text = await resp.text()
-            if resp.status >= 400:
-                logger.error("Platega get_status error %s: %s", resp.status, text)
-                raise web.HTTPBadRequest(text=text)
-            try:
+        try:
+            async with self._session.post(
+                _PLATEGA_BASE_URL + _API_CREATE,
+                headers=self._auth_headers(),
+                json=body,
+            ) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    logging.error(f"Platega create_invoice HTTP {resp.status}: {text}")
+                    # обновим статус как ошибка создания
+                    try:
+                        await payment_dal.update_payment_status_by_db_id(
+                            session, db_payment.payment_id, "failed_creation"
+                        )
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                    return None
                 data = json.loads(text)
-            except json.JSONDecodeError:
-                logger.error("Platega get_status: invalid JSON: %s", text)
-                raise web.HTTPInternalServerError(text="invalid provider response")
+        except Exception as e:
+            logging.error(f"Platega create_invoice request failed: {e}", exc_info=True)
+            try:
+                await payment_dal.update_payment_status_by_db_id(
+                    session, db_payment.payment_id, "failed_creation"
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
+            return None
 
-        data["internalStatus"] = self.map_status(data.get("status", ""))
-        return data
+        # Ожидаемый успешный ответ содержит transactionId и redirect
+        transaction_id = data.get("transactionId")
+        redirect_url = data.get("redirect")
+        status_from_api = data.get("status", STATUS_PENDING)
+
+        if not transaction_id or not redirect_url:
+            logging.error(f"Platega create_invoice: invalid response: {data}")
+            try:
+                await payment_dal.update_payment_status_by_db_id(
+                    session, db_payment.payment_id, "failed_creation"
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
+            return None
+
+        # Сохраняем provider_payment_id (transactionId) в записи
+        try:
+            await payment_dal.update_provider_payment_and_status(
+                session=session,
+                payment_db_id=db_payment.payment_id,
+                provider_payment_id=str(transaction_id),
+                new_status=str(status_from_api).lower() if status_from_api else "pending",
+            )
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            logging.error(
+                f"Platega create_invoice: failed to update provider id for DB payment {db_payment.payment_id}: {e}",
+                exc_info=True,
+            )
+            # Не прерываем — ссылку всё равно вернём пользователю
+        return redirect_url
+
+    async def get_status(self, transaction_id: str) -> Optional[Dict[str, Any]]:
+        """Получить информацию о статусе транзакции Platega."""
+        if not self.configured:
+            return None
+        await self._ensure_http()
+        try:
+            async with self._session.get(
+                _PLATEGA_BASE_URL + _API_STATUS.format(transaction_id=transaction_id),
+                headers=self._auth_headers(),
+            ) as resp:
+                if resp.status != 200:
+                    logging.warning(f"Platega get_status HTTP {resp.status}")
+                    return None
+                return await resp.json()
+        except Exception as e:
+            logging.error(f"Platega get_status error: {e}")
+            return None
 
     async def get_rate(
         self,
-        *,
-        payment_method: int,
-        currency_from: str,
-        currency_to: str,
-        accept: str = "application/json",
-    ) -> Dict[str, Any]:
-        """
-        Возвращает текущий курс обмена для указанного метода и валюты.
-        Документация: GET /rates/payment_method_rate
-        """
-        url = (
-            f"{self.base_url}/rates/payment_method_rate"
-            f"?merchantId={self.merchant_id}"
-            f"&paymentMethod={int(payment_method)}"
-            f"&currencyFrom={currency_from}"
-            f"&currencyTo={currency_to}"
-        )
-        headers = {
-            "accept": accept,
-            "X-MerchantId": str(self.merchant_id),
-            "X-Secret": str(self.api_secret),
+        payment_method: Optional[int] = None,
+        currency_from: str = "RUB",
+        currency_to: str = "USDT",
+    ) -> Optional[Dict[str, Any]]:
+        """Опционально: получить курс для метода оплаты."""
+        if not self.configured:
+            return None
+        await self._ensure_http()
+        pm = payment_method or self.default_payment_method
+        params = {
+            "merchantId": self.merchant_id,
+            "paymentMethod": pm,
+            "currencyFrom": currency_from,
+            "currencyTo": currency_to,
         }
-        logger.debug("Platega get_rate: GET %s", url)
-
-        async with self.http.get(url, headers=headers) as resp:
-            text = await resp.text()
-            if resp.status >= 400:
-                logger.error("Platega get_rate error %s: %s", resp.status, text)
-                raise web.HTTPBadRequest(text=text)
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError:
-                # Если запрошен text/plain — вернём как есть
-                if accept == "text/plain":
-                    return {"raw": text}
-                logger.error("Platega get_rate: invalid JSON: %s", text)
-                raise web.HTTPInternalServerError(text="invalid provider response")
-
-        return data
-
-    # === Callback handling ===
-    async def verify_callback_headers(self, request: web.Request) -> None:
-        """
-        Минимальная аутентификация callback-а на основании заголовков X-MerchantId / X-Secret.
-        Если провайдер поддержит подпись/HMAC — здесь это место для проверки.
-        """
-        if not self.check_callback_auth:
-            return
-
-        received_merchant = request.headers.get("X-MerchantId")
-        received_secret = request.headers.get("X-Secret")
-        if not received_merchant or not received_secret:
-            logger.warning("Platega callback: missing auth headers")
-            raise web.HTTPUnauthorized(reason="missing headers")
-
-        # Простая проверка равенства. Если провайдер добавит подпись, здесь заменить логику.
-        if str(received_merchant) != str(self.merchant_id) or str(received_secret) != str(self.api_secret):
-            logger.warning("Platega callback: invalid auth headers")
-            raise web.HTTPUnauthorized(reason="bad credentials")
-
-    async def handle_callback(
-        self,
-        raw_body: bytes,
-        db_session_factory: sessionmaker,
-    ) -> web.Response:
-        """
-        Обработка callback POST:
-        Headers: X-MerchantId, X-Secret
-        Body JSON: { id, amount, currency, status, paymentMethod }
-        """
         try:
-            payload = json.loads(raw_body.decode("utf-8"))
-        except json.JSONDecodeError:
-            logger.error("Platega callback: invalid JSON")
-            return web.Response(status=400, text="bad_request_invalid_json")
+            async with self._session.get(
+                _PLATEGA_BASE_URL + _API_RATE,
+                headers=self._auth_headers() | {"accept": "application/json"},
+                params=params,
+            ) as resp:
+                if resp.status != 200:
+                    logging.warning(f"Platega get_rate HTTP {resp.status}")
+                    return None
+                return await resp.json()
+        except Exception as e:
+            logging.error(f"Platega get_rate error: {e}")
+            return None
 
-        provider_payment_id = payload.get("id")
-        provider_status = (payload.get("status") or "").upper()
-
-        # Маппим в ваш внутренний статус
-        internal_status = self.map_status(provider_status)
-
-        # Определяем наш payment_db_id.
-        # Вариант 1: у вас есть DAL-функция поиска по provider_payment_id.
-        payment_db_id = None
-        if payment_dal and hasattr(payment_dal, "get_payment_by_provider_payment_id"):
-            try:
-                async with db_session_factory() as session:  # type: AsyncSession
-                    rec = await payment_dal.get_payment_by_provider_payment_id(session, provider_payment_id)
-                    if rec:
-                        payment_db_id = getattr(rec, "id", None)
-            except Exception:
-                logger.exception("Platega callback: lookup by provider_payment_id failed")
-
-        if payment_db_id is None:
-            logger.warning("Platega callback: payment_db_id not found, provider_id=%s", provider_payment_id)
-            # Принимаем callback, чтобы не было повторов; событие залогировано для ручной обработки.
-            return web.Response(status=200, text="ok_missing_payment_db_id_logged")
-
-        # Обновляем статус в БД
+    async def _safe_username(self) -> str:
+        """Попытка получить username бота (fallback — 'bot')."""
         try:
-            async with db_session_factory() as session:  # type: AsyncSession
-                updated = await payment_dal.update_provider_payment_and_status(
-                    session,
-                    payment_db_id=payment_db_id,
-                    new_status=internal_status,
-                    provider_payment_id=provider_payment_id,
-                )
-                if not updated:
-                    logger.error("Platega callback: DB update returned falsy value (id=%s)", payment_db_id)
-                    return web.Response(status=200, text="ok_internal_processing_error_logged")
+            me = await self.bot.get_me()
+            return me.username or "bot"
         except Exception:
-            logger.exception("Platega callback: DB update error")
-            return web.Response(status=200, text="ok_internal_processing_error_logged")
-
-        # Доп. бизнес-логика: активация подписки/уведомления и т.п. при succeeded.
-        # if internal_status == "succeeded":
-        #     try:
-        #         ...
-        #     except Exception:
-        #         logger.exception("Platega callback: business logic error")
-
-        return web.Response(status=200, text="ok")
+            return "bot"
 
 
-# === AIOHTTP route handlers to plug into your app ===
-async def platega_create_handler(request: web.Request) -> web.Response:
+# ------------------------ Webhook / Callback ------------------------
+
+async def _process_platega_confirmed(
+    session: AsyncSession,
+    bot: Bot,
+    i18n: JsonI18n,
+    settings: Settings,
+    subscription_service: SubscriptionService,
+    referral_service: ReferralService,
+    event: Dict[str, Any],
+) -> None:
     """
-    Пример endpoint'а для создания платежа.
-    POST /payments/platega/create
-    Body JSON:
+    Обработка успешного платежа из Platega callback.
+    event sample:
     {
-      "payment_db_id": 123,
-      "amount": 970,
-      "currency": "RUB",
-      "paymentMethod": 2,
-      "description": "test",
-      "returnUrl": "https://example.com/success",
-      "failedUrl": "https://example.com/fail"
-    }
-    """
-    settings: Settings = request.app["settings"]
-    db_session_factory: sessionmaker = request.app["db_session_factory"]
-    service = PlategaService(settings)
-    try:
-        data = await request.json()
-    except Exception:
-        return web.Response(status=400, text="invalid json")
-
-    result = await service.create_payment(
-        db_session_factory=db_session_factory,
-        payment_db_id=data.get("payment_db_id"),
-        amount=int(data.get("amount", 0)),
-        currency=data.get("currency", "RUB"),
-        payment_method=int(data.get("paymentMethod", PlategaMethod.SBP_QR)),
-        description=data.get("description"),
-        return_url=data.get("returnUrl"),
-        failed_url=data.get("failedUrl"),
-        payload=str(data.get("payment_db_id")) if data.get("payment_db_id") is not None else None,
-    )
-    await service.aclose()
-    return web.json_response(
-        {
-            "transactionId": result.transaction_id,
-            "redirect": result.redirect_url,
-            "status": result.status,
-            "expiresIn": result.expires_in,
-            "raw": result.raw,
-        }
-    )
-
-
-async def platega_status_handler(request: web.Request) -> web.Response:
-    """
-    GET /payments/platega/status/{transaction_id}
-    """
-    settings: Settings = request.app["settings"]
-    service = PlategaService(settings)
-    transaction_id = request.match_info.get("transaction_id")
-    if not transaction_id:
-        return web.Response(status=400, text="missing transaction_id")
-
-    data = await service.get_status(transaction_id)
-    await service.aclose()
-    return web.json_response(data)
-
-
-async def platega_rates_handler(request: web.Request) -> web.Response:
-    """
-    GET /payments/platega/rates?paymentMethod=2&from=RUB&to=USDT
-    """
-    settings: Settings = request.app["settings"]
-    service = PlategaService(settings)
-    pm = int(request.query.get("paymentMethod", PlategaMethod.SBP_QR))
-    frm = request.query.get("from", "RUB")
-    to = request.query.get("to", "USDT")
-    data = await service.get_rate(payment_method=pm, currency_from=frm, currency_to=to)
-    await service.aclose()
-    return web.json_response(data)
-
-
-async def platega_callback_handler(request: web.Request) -> web.Response:
-    """
-    POST /webhooks/platega
-    Headers must include X-MerchantId and X-Secret (unless PLATEGA_CALLBACK_AUTH_CHECK=False).
-    Body:
-    {
-        "id": "uuid",
-        "amount": 100,
+        "id": "00000000-0000-0000-0000-000000000000",
+        "amount": 970,
         "currency": "RUB",
-        "status": "CONFIRMED|CANCELED|PENDING|FAILED|EXPIRED",
+        "status": "CONFIRMED",
         "paymentMethod": 2
     }
     """
-    settings: Settings = request.app["settings"]
-    db_session_factory: sessionmaker = request.app["db_session_factory"]
-    service = PlategaService(settings)
 
-    # Verify callback headers (simple equality check per docs)
+    transaction_id = str(event.get("id") or "")
+    status = str(event.get("status") or "").upper()
+    amount_val = float(event.get("amount") or 0.0)
+    currency = str(event.get("currency") or "RUB")
+
+    if not transaction_id:
+        logging.error("Platega callback: missing 'id' in event")
+        return
+
+    # Находим нашу запись платежа по provider_payment_id == transaction_id
+    payment_model = await payment_dal.get_payment_by_provider_payment_id(session, transaction_id)
+    if not payment_model:
+        logging.error(f"Platega callback: payment not found for transaction_id={transaction_id}")
+        return
+
+    user_id = payment_model.user_id
+    months = payment_model.subscription_duration_months or 1
+    payment_db_id = payment_model.payment_id
+
+    # Обновляем статус платежа в нашей БД
     try:
-        await service.verify_callback_headers(request)
-    except web.HTTPException as e:
-        return web.Response(status=e.status, text=e.reason)
+        await payment_dal.update_provider_payment_and_status(
+            session=session,
+            payment_db_id=payment_db_id,
+            provider_payment_id=transaction_id,
+            new_status="succeeded" if status == STATUS_CONFIRMED else status.lower(),
+        )
+        await session.flush()
+    except Exception as e:
+        logging.error(
+            f"Platega callback: failed to update payment status for DB id {payment_db_id}: {e}",
+            exc_info=True,
+        )
+        # Продолжим попытку активировать подписку, но это нежелательно; оставим как есть.
 
-    raw = await request.read()
-    resp = await service.handle_callback(raw, db_session_factory)
-    await service.aclose()
-    return resp
+    # Активируем подписку
+    try:
+        activation = await subscription_service.activate_subscription(
+            session=session,
+            user_id=user_id,
+            months=months,
+            amount_paid=amount_val,
+            payment_db_id=payment_db_id,
+            promo_code_id_from_payment=None,
+            provider="platega",
+        )
+        if not activation or not activation.get("end_date"):
+            raise RuntimeError("activation returned no end_date")
+
+        # Реферальные бонусы (однократно для первого успешного платежа юзера)
+        referral_info = await referral_service.apply_referral_bonuses_for_payment(
+            session=session,
+            user_id=user_id,
+            months=months,
+            current_payment_db_id=payment_db_id,
+            skip_if_active_before_payment=False,
+        )
+
+        final_end_date = activation["end_date"]
+        applied_promo_bonus_days = activation.get("applied_promo_bonus_days", 0)
+        applied_referee_bonus_days = referral_info.get("referee_bonus_applied_days") if referral_info else None
+        if referral_info and referral_info.get("referee_new_end_date"):
+            final_end_date = referral_info["referee_new_end_date"]
+
+        # Сообщение пользователю
+        db_user = await user_dal.get_user_by_id(session, user_id)
+        user_lang = db_user.language_code if db_user and db_user.language_code else settings.DEFAULT_LANGUAGE
+        _ = lambda key, **kwargs: i18n.gettext(user_lang, key, **kwargs)
+
+        config_link = activation.get("subscription_url") or _("config_link_not_available")
+        details_markup = get_connect_and_main_keyboard(user_lang, i18n, settings, config_link)
+
+        if applied_referee_bonus_days and final_end_date:
+            inviter_name_display = _("friend_placeholder")
+            if db_user and db_user.referred_by_id:
+                inviter = await user_dal.get_user_by_id(session, db_user.referred_by_id)
+                if inviter and inviter.first_name:
+                    inviter_name_display = inviter.first_name
+                elif inviter and inviter.username:
+                    inviter_name_display = f"@{inviter.username}"
+
+            message_text = _(
+                "payment_successful_with_referral_bonus_full",
+                months=months,
+                base_end_date=activation["end_date"].strftime('%Y-%m-%d'),
+                bonus_days=applied_referee_bonus_days,
+                final_end_date=final_end_date.strftime('%Y-%m-%d'),
+                inviter_name=inviter_name_display,
+                config_link=config_link,
+            )
+        elif applied_promo_bonus_days > 0 and final_end_date:
+            message_text = _(
+                "payment_successful_with_promo_full",
+                months=months,
+                bonus_days=applied_promo_bonus_days,
+                end_date=final_end_date.strftime('%Y-%m-%d'),
+                config_link=config_link,
+            )
+        else:
+            message_text = _(
+                "payment_successful_full",
+                months=months,
+                end_date=final_end_date.strftime('%Y-%m-%d'),
+                config_link=config_link,
+            )
+
+        try:
+            await bot.send_message(
+                user_id,
+                message_text,
+                reply_markup=details_markup,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logging.error(f"Platega callback: failed to notify user {user_id}: {e}")
+
+        # Уведомление в лог-канал
+        try:
+            note = NotificationService(bot, settings, i18n)
+            await note.notify_payment_received(
+                user_id=user_id,
+                amount=amount_val,
+                currency=settings.DEFAULT_CURRENCY_SYMBOL or currency,
+                months=months,
+                payment_provider="platega",
+                username=(db_user.username if db_user else None),
+            )
+        except Exception as e:
+            logging.error(f"Platega callback: notify_payment_received failed: {e}")
+
+    except Exception as e:
+        logging.error(f"Platega callback: activation/referral failed for user {user_id}: {e}", exc_info=True)
+        raise
+
+async def _process_platega_cancelled(
+    session: AsyncSession,
+    bot: Bot,
+    i18n: JsonI18n,
+    settings: Settings,
+    event: Dict[str, Any],
+) -> None:
+    transaction_id = str(event.get("id") or "")
+    if not transaction_id:
+        logging.error("Platega callback (cancelled): missing id")
+        return
+
+    payment_model = await payment_dal.get_payment_by_provider_payment_id(session, transaction_id)
+    if not payment_model:
+        logging.warning(f"Platega callback (cancelled): payment not found for transaction {transaction_id}")
+        return
+
+    try:
+        await payment_dal.update_provider_payment_and_status(
+            session=session,
+            payment_db_id=payment_model.payment_id,
+            provider_payment_id=transaction_id,
+            new_status="canceled",
+        )
+        await session.flush()
+    except Exception as e:
+        logging.error(f"Platega callback: failed to set canceled: {e}")
+
+    # уведомим пользователя
+    db_user = await user_dal.get_user_by_id(session, payment_model.user_id)
+    user_lang = db_user.language_code if db_user and db_user.language_code else settings.DEFAULT_LANGUAGE
+    _ = lambda key, **kwargs: i18n.gettext(user_lang, key, **kwargs)
+    try:
+        await bot.send_message(payment_model.user_id, _("payment_failed"))
+    except Exception as e:
+        logging.error(f"Platega callback: failed to notify user about cancel: {e}")
 
 
-# === App wiring helper ===
-def setup_platega_routes(app: web.Application) -> None:
+# --- основной HTTP-роут колбэка ---
+
+async def platega_webhook_route(request: web.Request):
     """
-    Вспомогательный метод для регистрации роутов в вашем aiohttp-приложении.
+    AIOHTTP handler: принимает POST от Platega.
+    Требуемые заголовки: X-MerchantId / X-Secret — сверяем с нашими.
+    Тело:
+    {
+        "id": "uuid",
+        "amount": 970,
+        "currency": "RUB",
+        "status": "CONFIRMED" | "CANCELED" | "PENDING" | ...
+        "paymentMethod": 2
+    }
     """
-    app.router.add_post("/payments/platega/create", platega_create_handler)
-    app.router.add_get("/payments/platega/status/{transaction_id}", platega_status_handler)
-    app.router.add_get("/payments/platega/rates", platega_rates_handler)
-    app.router.add_post("/webhooks/platega", platega_callback_handler)
+    try:
+        bot: Bot = request.app["bot"]
+        i18n: JsonI18n = request.app["i18n"]
+        settings: Settings = request.app["settings"]
+        subscription_service: SubscriptionService = request.app["subscription_service"]
+        referral_service: ReferralService = request.app["referral_service"]
+        async_session_factory: sessionmaker = request.app["async_session_factory"]
+    except KeyError as e:
+        logging.error(f"Platega webhook: app context missing key: {e}")
+        return web.Response(status=500, text="internal_error_missing_context")
+
+    # Проверка заголовков
+    recv_merchant = request.headers.get("X-MerchantId")
+    recv_secret = request.headers.get("X-Secret")
+    expected_merchant = getattr(settings, "PLATEGA_MERCHANT_ID", None)
+    expected_secret = getattr(settings, "PLATEGA_SECRET", None)
+
+    if not expected_merchant or not expected_secret:
+        logging.error("Platega webhook: credentials not configured in settings.")
+        return web.Response(status=401, text="unauthorized_not_configured")
+
+    if recv_merchant != expected_merchant or recv_secret != expected_secret:
+        logging.warning(
+            f"Platega webhook: invalid headers. got X-MerchantId={recv_merchant}, X-Secret={bool(recv_secret)}"
+        )
+        # Возвращаем 200, чтобы Platega не спамила (можно и 401, но сервис повторяет 3 раза)
+        return web.Response(status=401, text="unauthorized")
+
+    # Читаем JSON
+    try:
+        event = await request.json()
+    except Exception:
+        logging.error("Platega webhook: invalid JSON")
+        return web.Response(status=400, text="bad_json")
+
+    status = str(event.get("status") or "").upper()
+    tx_id = str(event.get("id") or "")
+
+    if not tx_id:
+        return web.Response(status=400, text="missing_id")
+
+    async with payment_processing_lock:
+        async with async_session_factory() as session:
+            try:
+                if status == STATUS_CONFIRMED:
+                    await _process_platega_confirmed(
+                        session=session,
+                        bot=bot,
+                        i18n=i18n,
+                        settings=settings,
+                        subscription_service=subscription_service,
+                        referral_service=referral_service,
+                        event=event,
+                    )
+                    await session.commit()
+                elif status in (STATUS_CANCELED, STATUS_FAILED, STATUS_EXPIRED):
+                    await _process_platega_cancelled(
+                        session=session, bot=bot, i18n=i18n, settings=settings, event=event
+                    )
+                    await session.commit()
+                else:
+                    # PENDING и прочие статусы — просто подтверждаем приём
+                    logging.info(f"Platega webhook: transaction {tx_id} status={status}")
+            except Exception as e:
+                await session.rollback()
+                logging.error(f"Platega webhook: processing error for {tx_id}: {e}", exc_info=True)
+                # Возвращаем 200, чтобы не получать ещё 3 повтора — мы уже логируем и можем дообработать отдельно.
+                return web.Response(status=200, text="ok_internal_error_logged")
+
+    return web.Response(status=200, text="ok")
 
 
-# === Example of usage in an aiohttp app (pseudo) ===
-# from aiohttp import web
-# app = web.Application()
-# app["settings"] = Settings(...)
-# app["db_session_factory"] = sessionmaker(..., class_=AsyncSession)
-# setup_platega_routes(app)
-# web.run_app(app, port=8080)
+# ------------------------ Хэндлер для UI (кнопка оплатить) ------------------------
+
+async def pay_platega_flow(
+    callback_event,
+    i18n_data: Dict[str, Any],
+    settings: Settings,
+    platega_service: "PlategaService",
+    session: AsyncSession,
+):
+    """
+    Универсальный шаг из user_subscription_handlers:
+    парсит callback_data вида 'pay_platega:{months}:{price}',
+    создаёт инвойс и показывает ссылку.
+    """
+    current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
+    i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
+    _ = lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs) if i18n else key
+
+    if not i18n or not getattr(callback_event, "message", None):
+        try:
+            await callback_event.answer(_("error_occurred_try_again"), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if not platega_service or not platega_service.configured:
+        await callback_event.message.edit_text(_("payment_service_unavailable"))
+        try:
+            await callback_event.answer(_("payment_service_unavailable_alert"), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    # payload: pay_platega:{months}:{price}
+    try:
+        _, payload = callback_event.data.split(":", 1)
+        months_str, price_str = payload.split(":")
+        months = int(months_str)
+        amount_rub = float(price_str)
+    except Exception:
+        logging.error(f"pay_platega: bad callback data -> {callback_event.data}")
+        try:
+            await callback_event.answer(_("error_try_again"), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    user_id = callback_event.from_user.id
+    description = _("payment_description_subscription", months=months)
+
+    # создаём инвойс
+    payment_url = await platega_service.create_invoice(
+        session=session,
+        user_id=user_id,
+        months=months,
+        amount_rub=amount_rub,
+        description=description,
+        payment_method=None,  # используем дефолт из settings
+    )
+
+    if payment_url:
+        try:
+            await callback_event.message.edit_text(
+                _("payment_link_message", months=months),
+                reply_markup=get_payment_url_keyboard(payment_url, current_lang, i18n),
+                disable_web_page_preview=False,
+            )
+        except Exception as e:
+            logging.warning(f"pay_platega: edit_text failed: {e}; sending new message")
+            await callback_event.message.answer(
+                _("payment_link_message", months=months),
+                reply_markup=get_payment_url_keyboard(payment_url, current_lang, i18n),
+                disable_web_page_preview=False,
+            )
+    else:
+        await callback_event.message.edit_text(_("error_payment_gateway"))
+
+    try:
+        await callback_event.answer()
+    except Exception:
+        pass
