@@ -227,11 +227,10 @@ async def pay_platega_callback_handler(
 
     # Разбираем данные из callback_data: pay_platega:{months}:{price}
     try:
-        _, data_payload = callback.data.split(":", 1)
-        months_str, price_str = data_payload.split(":")
+        _, months_str = callback_event.data.split(":", 1)
         months = int(months_str)
-        price_rub = float(price_str)
-    except (ValueError, IndexError):
+        amount_rub = settings.subscription_options.get(months)
+    except Exception:
         logging.error(f"Invalid pay_platega data in callback: {callback.data}")
         try:
             await callback.answer(_("error_try_again"), show_alert=True)
