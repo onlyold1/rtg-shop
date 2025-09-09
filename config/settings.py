@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     SERVER_STATUS_URL: Optional[str] = Field(default=None)
     TERMS_OF_SERVICE_URL: Optional[str] = Field(default=None)
 
+    PLATEGA_MERCHANT_ID: Optional[str] = None
+    PLATEGA_API_SECRET: Optional[str] = None
+    PLATEGA_BASE_URL: str = Field(default="https://app.platega.io")
+    PLATEGA_ENABLED: bool = Field(default=False)
+
     YOOKASSA_SHOP_ID: Optional[str] = None
     YOOKASSA_SECRET_KEY: Optional[str] = None
     YOOKASSA_RETURN_URL: Optional[str] = None
@@ -65,6 +70,7 @@ class Settings(BaseSettings):
     TRIBUTE_LINK_3_MONTHS: Optional[str] = Field(default=None)
     TRIBUTE_LINK_6_MONTHS: Optional[str] = Field(default=None)
     TRIBUTE_LINK_12_MONTHS: Optional[str] = Field(default=None)
+    
     TRIBUTE_API_KEY: Optional[str] = Field(default=None)
     TRIBUTE_SKIP_NOTIFICATIONS: bool = Field(default=True, description="Skip renewal notifications for Tribute payments")
     TRIBUTE_SKIP_CANCELLATION_NOTIFICATIONS: bool = Field(default=False, description="Skip cancellation notifications for Tribute payments")
@@ -183,7 +189,6 @@ class Settings(BaseSettings):
     @computed_field
     @property
     def yookassa_webhook_path(self) -> str:
-
         return "/webhook/yookassa"
 
     @computed_field
@@ -193,6 +198,20 @@ class Settings(BaseSettings):
         if base:
             return f"{base.rstrip('/')}{self.yookassa_webhook_path}"
         return None
+
+    @computed_field
+    @property
+    def platega_webhook_path(self) -> str:
+        return "/webhook/platega"
+
+    @computed_field
+    @property
+    def platega_full_webhook_url(self) -> Optional[str]:
+        base = self.WEBHOOK_BASE_URL
+        if base:
+            return f"{base.rstrip('/')}{self.platega_webhook_path}"
+        return None
+
 
     @computed_field
     @property
@@ -350,6 +369,14 @@ def get_settings() -> Settings:
                 logging.warning(
                     "CRITICAL: YooKassa credentials (SHOP_ID or SECRET_KEY) are not set. Payments will not work."
                 )
+            if _settings_instance.PLATEGA_ENABLED and (
+                not _settings_instance.PLATEGA_MERCHANT_ID
+                or not _settings_instance.PLATEGA_API_SECRET
+            ):
+                logging.warning(
+                    "CRITICAL: Platega credentials (MERCHANT_ID or API_SECRET) are not set. Platega payments will not work."
+                )
+
 
         except ValidationError as e:
             logging.critical(
