@@ -602,7 +602,7 @@ async def pay_platega_flow(
         return
 
     try:
-        _, payload = callback_event.data.split(":", 1)
+        payload = callback_event.data.split(":", 1)[1]
         months_str, price_str = payload.split(":")
         months = int(months_str)
         amount_rub = float(price_str)
