@@ -12,8 +12,7 @@ from bot.keyboards.inline.user_keyboards import (
     get_subscription_options_keyboard, get_payment_method_keyboard,
     get_payment_url_keyboard, get_back_to_main_menu_markup)
 from bot.services.yookassa_service import YooKassaService
-from bot.services.platega_service import PlategaService
-from bot.services.platega_service import pay_platega_flow
+from bot.services.platega_service import PlategaService, pay_platega_flow
 from bot.services.stars_service import StarsService
 from bot.services.crypto_pay_service import CryptoPayService
 from bot.services.subscription_service import SubscriptionService
@@ -197,76 +196,6 @@ async def pay_stars_callback_handler(
         await callback.answer()
     except Exception:
         pass
-
-@router.callback_query(F.data.startswith("pay_platega:"))
-async def pay_platega_callback_handler(
-        callback: types.CallbackQuery,
-        settings: Settings,
-        i18n_data: dict,
-        platega_service: PlategaService,
-        session: AsyncSession,
-    ):
-    current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
-    i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
-    _ = (lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs)) if i18n else (lambda k, **kw: k)
-
-    if not i18n or not callback.message:
-        try:
-            await callback.answer(_("error_occurred_try_again"), show_alert=True)
-        except Exception:
-            pass
-        return
-
-    # Проверим Platega включена ли
-    if not platega_service or not platega_service.configured:
-        await callback.message.edit_text(_("payment_service_unavailable"))
-        try:
-            await callback.answer(_("payment_service_unavailable_alert"), show_alert=True)
-        except Exception:
-            pass
-        return
-
-    # --- Разбор callback_data ---
-    try:
-        _, months_str = callback.data.split(":", 1)
-        months = int(months_str)
-        amount_rub = settings.subscription_options.get(months)
-        if not amount_rub:
-            raise ValueError("No price for this months in settings.subscription_options")
-    except Exception as e:
-        logging.error(f"Invalid pay_platega data in callback: {callback.data} ({e})")
-        try:
-            await callback.answer(_("error_try_again"), show_alert=True)
-        except Exception:
-            pass
-        return
-
-    user_id = callback.from_user.id
-    description = _("payment_description_subscription", months=months)
-
-    # --- Создаём платёж через PlategaService ---
-    payment_url = await platega_service.create_invoice(
-        session=session,
-        user_id=user_id,
-        months=months,
-        amount_rub=amount_rub,
-        description=description,
-    )
-
-    if payment_url:
-        await callback.message.edit_text(
-            _("payment_link_message", months=months),
-            reply_markup=get_payment_url_keyboard(payment_url, current_lang, i18n),
-            disable_web_page_preview=False,
-        )
-    else:
-        await callback.message.edit_text(_("error_payment_gateway"))
-
-    try:
-        await callback.answer()
-    except Exception:
-        pass
-
 
 @router.callback_query(F.data.startswith("pay_yk:"))
 async def pay_yk_callback_handler(
