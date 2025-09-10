@@ -200,12 +200,12 @@ async def pay_stars_callback_handler(
 
 @router.callback_query(F.data.startswith("pay_platega:"))
 async def pay_platega_callback_handler(
-    callback: types.CallbackQuery,
-    settings: Settings,
-    i18n_data: dict,
-    platega_service: PlategaService,
-    session: AsyncSession,
-):
+        callback: types.CallbackQuery,
+        settings: Settings,
+        i18n_data: dict,
+        platega_service: PlategaService,
+        session: AsyncSession,
+    ):
     current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
     i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
     _ = (lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs)) if i18n else (lambda k, **kw: k)
@@ -217,8 +217,8 @@ async def pay_platega_callback_handler(
             pass
         return
 
-    # Проверим доступность сервиса/настроек
-    if not platega_service or not getattr(settings, "PLATEGA_ENABLED", True):
+    # Проверим Platega включена ли
+    if not platega_service or not platega_service.configured:
         await callback.message.edit_text(_("payment_service_unavailable"))
         try:
             await callback.answer(_("payment_service_unavailable_alert"), show_alert=True)
@@ -226,13 +226,15 @@ async def pay_platega_callback_handler(
             pass
         return
 
-    # Разбираем данные из callback_data: pay_platega:{months}:{price}
+    # --- Разбор callback_data ---
     try:
-        _, months_str = callback_event.data.split(":", 1)
+        _, months_str = callback.data.split(":", 1)
         months = int(months_str)
         amount_rub = settings.subscription_options.get(months)
-    except Exception:
-        logging.error(f"Invalid pay_platega data in callback: {callback.data}")
+        if not amount_rub:
+            raise ValueError("No price for this months in settings.subscription_options")
+    except Exception as e:
+        logging.error(f"Invalid pay_platega data in callback: {callback.data} ({e})")
         try:
             await callback.answer(_("error_try_again"), show_alert=True)
         except Exception:
@@ -242,74 +244,19 @@ async def pay_platega_callback_handler(
     user_id = callback.from_user.id
     description = _("payment_description_subscription", months=months)
 
-    # 1) Создаём запись платежа в БД (как у YooKassa), фиксируем провайдера
-    try:
-        db_payment = await payment_dal.create_payment_record(session, {
-            "user_id": user_id,
-            "amount": price_rub,
-            "currency": "RUB",
-            "status": "requires_action",              # Platega возвращает PENDING → наш норм. статус ожидания
-            "description": description,
-            "subscription_duration_months": months,
-            "provider": "platega",
-            "provider_payment_id": None,
-        })
-        await session.commit()
-    except Exception as e:
-        await session.rollback()
-        logging.error(f"DB: failed to create Platega payment record for user {user_id}: {e}", exc_info=True)
-        await callback.message.edit_text(_("error_creating_payment_record"))
-        try:
-            await callback.answer(_("error_try_again"), show_alert=True)
-        except Exception:
-            pass
-        return
+    # --- Создаём платёж через PlategaService ---
+    payment_url = await platega_service.create_invoice(
+        session=session,
+        user_id=user_id,
+        months=months,
+        amount_rub=amount_rub,
+        description=description,
+    )
 
-    # 2) Создаём транзакцию в Platega и получаем ссылку
-    try:
-        # Внутри PlategaService задайте return/failed URL из Settings (или используйте дефолты)
-        res = await platega_service.create_payment(
-            amount=price_rub,
-            currency="RUB",
-            months=months,
-            description=description,
-            return_url=getattr(settings, "SUBSCRIPTION_MINI_APP_URL", None),
-            failed_url=None,
-            payload=str(db_payment.payment_id),  # пригодится при отладке
-        )
-    except Exception as e:
-        logging.error(f"Platega: create_payment failed for db_id={db_payment.payment_id}: {e}", exc_info=True)
-        try:
-            await payment_dal.update_payment_status_by_db_id(session, db_payment.payment_id, "failed_creation")
-            await session.commit()
-        except Exception:
-            await session.rollback()
-        await callback.message.edit_text(_("error_payment_gateway"))
-        try:
-            await callback.answer(_("error_try_again"), show_alert=True)
-        except Exception:
-            pass
-        return
-
-    # 3) Привяжем внешний id + оставим статус «ожидание»
-    try:
-        if res and getattr(res, "transaction_id", None):
-            await payment_dal.update_provider_payment_and_status(
-                session,
-                payment_db_id=db_payment.payment_id,
-                provider_payment_id=res.transaction_id,
-                new_status="requires_action",
-            )
-            await session.commit()
-    except Exception as e:
-        await session.rollback()
-        logging.error(f"DB: failed to attach provider id for Platega payment {db_payment.payment_id}: {e}", exc_info=True)
-
-    # 4) Отдадим пользователю ссылку на оплату
-    if res and getattr(res, "redirect_url", None):
+    if payment_url:
         await callback.message.edit_text(
             _("payment_link_message", months=months),
-            reply_markup=get_payment_url_keyboard(res.redirect_url, current_lang, i18n),
+            reply_markup=get_payment_url_keyboard(payment_url, current_lang, i18n),
             disable_web_page_preview=False,
         )
     else:
@@ -319,6 +266,7 @@ async def pay_platega_callback_handler(
         await callback.answer()
     except Exception:
         pass
+
 
 @router.callback_query(F.data.startswith("pay_yk:"))
 async def pay_yk_callback_handler(
