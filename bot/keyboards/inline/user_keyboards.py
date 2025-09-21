@@ -63,13 +63,6 @@ def get_main_menu_inline_keyboard(
             InlineKeyboardButton(text=_(key="menu_support_button"),
                                  url=settings.SUPPORT_LINK))
 
-    if settings.TERMS_OF_SERVICE_URL:
-        builder.row(
-            InlineKeyboardButton(text=_(key="menu_terms_button"),
-                                 url=settings.TERMS_OF_SERVICE_URL))
-
-    return builder.as_markup()
-
 
 def get_language_selection_keyboard(i18n_instance,
                                     current_lang: str) -> InlineKeyboardMarkup:
@@ -85,6 +78,18 @@ def get_language_selection_keyboard(i18n_instance,
     builder.adjust(1)
     return builder.as_markup()
 
+
+def get_terms_selection_keyboard(lang: str, 
+                                 i18n_instance, settings: Settings) -> InlineKeyboardMarkup:
+    _ = lambda key, **kwargs: i18n_instance.gettext(lang, key, **kwargs)
+    builder = InlineKeyboardBuilder()
+    if settings.TERMS_URL_ONE:
+    builder.button(text=_("terms_button_one"), url=settings.TERMS_URL_ONE)
+    if settings.TERMS_URL_TWO:
+    builder.button(text=_("terms_button_two"), url=settings.TERMS_URL_TWO)
+    builder.button(text=_(key="back_to_main_menu_button"), callback_data="main_action:back_to_main")
+    builder.adjust(1)
+    return builder.as_markup()
 
 def get_trial_confirmation_keyboard(lang: str,
                                     i18n_instance) -> InlineKeyboardMarkup:
