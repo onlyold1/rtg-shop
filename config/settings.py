@@ -22,7 +22,8 @@ class Settings(BaseSettings):
 
     SUPPORT_LINK: Optional[str] = Field(default=None)
     SERVER_STATUS_URL: Optional[str] = Field(default=None)
-    TERMS_OF_SERVICE_URL: Optional[str] = Field(default=None)
+    TERMS_URL_ONE: Optional[str] = Field(default=None)
+    TERMS_URL_TWO: Optional[str] = Field(default=None)
 
     PLATEGA_MERCHANT_ID: Optional[str] = None
     PLATEGA_API_SECRET: Optional[str] = None
