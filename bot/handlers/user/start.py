@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from db.dal import user_dal
 
-from bot.keyboards.inline.user_keyboards import get_main_menu_inline_keyboard, get_language_selection_keyboard
+from bot.keyboards.inline.user_keyboards import get_main_menu_inline_keyboard, get_language_selection_keyboard, get_terms_selection_keyboard
 from bot.services.subscription_service import SubscriptionService
 from bot.services.panel_api_service import PanelApiService
 from bot.services.referral_service import ReferralService
@@ -394,6 +394,38 @@ async def main_action_callback_handler(
     elif action == "language":
 
         await language_command_handler(callback, i18n_data, settings)
+    
+    elif action == "terms":
+        current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
+        i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
+
+        if not i18n:
+            await callback.answer("Language service unavailable.", show_alert=True)
+            return
+
+        _ = lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs)
+        terms_keyboard = get_terms_selection_keyboard(current_lang, i18n, settings)
+
+        if not terms_keyboard:
+            await callback.answer(_(key="terms_not_configured_alert"),
+                                   show_alert=True)
+            return
+
+        terms_prompt = _(key="terms_select_prompt")
+
+        try:
+            await callback.message.edit_text(terms_prompt,
+                                             reply_markup=terms_keyboard)
+        except Exception:
+            try:
+                await callback.message.answer(terms_prompt,
+                                               reply_markup=terms_keyboard)
+            except Exception:
+                await callback.answer(_(key="error_occurred_try_again"),
+                                       show_alert=True)
+                return
+
+        await callback.answer()
     elif action == "back_to_main":
         await send_main_menu(callback,
                              settings,
