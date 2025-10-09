@@ -119,6 +119,7 @@ async def send_main_menu(target_event: Union[types.Message,
 @router.message(CommandStart())
 @router.message(CommandStart(magic=F.args.regexp(r"^ref_(\d+)$").as_("ref_match")))
 @router.message(CommandStart(magic=F.args.regexp(r"^promo_(\w+)$").as_("promo_match")))
+@router.message(CommandStart(magic=F.args.regexp(r"^(?!ref_|promo_)([A-Za-z0-9_\-]{2,64})$").as_("ad_param_match")))
 async def start_command_handler(message: types.Message,
                                 state: FSMContext,
                                 settings: Settings,
@@ -126,7 +127,8 @@ async def start_command_handler(message: types.Message,
                                 subscription_service: SubscriptionService,
                                 session: AsyncSession,
                                 ref_match: Optional[re.Match] = None,
-                                promo_match: Optional[re.Match] = None):
+                                promo_match: Optional[re.Match] = None,
+                                ad_param_match: Optional[re.Match] = None):
     await state.clear()
     current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
     i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
@@ -138,6 +140,7 @@ async def start_command_handler(message: types.Message,
 
     referred_by_user_id: Optional[int] = None
     promo_code_to_apply: Optional[str] = None
+    ad_start_param: Optional[str] = None
 
     if ref_match:
         potential_referrer_id = int(ref_match.group(1))
@@ -146,6 +149,9 @@ async def start_command_handler(message: types.Message,
     elif promo_match:
         promo_code_to_apply = promo_match.group(1)
         logging.info(f"User {user_id} started with promo code: {promo_code_to_apply}")
+    elif ad_param_match:
+        ad_start_param = ad_param_match.group(1)
+        logging.info(f"User {user_id} started with ad start param: {ad_start_param}")
 
     sanitized_username = sanitize_username(user.username)
     sanitized_first_name = sanitize_display_name(user.first_name)
@@ -221,7 +227,22 @@ async def start_command_handler(message: types.Message,
                 logging.error(
                     f"Failed to update existing user {user_id} in session: {e_update}",
                     exc_info=True)
-
+    
+                                  # Attribute user to ad campaign if start param provided
+    if ad_start_param:
+        try:
+            from db.dal import ad_dal as _ad_dal
+            campaign = await _ad_dal.get_campaign_by_start_param(session, ad_start_param)
+            if campaign and campaign.is_active:
+                await _ad_dal.ensure_attribution(session, user_id=user_id, campaign_id=campaign.ad_campaign_id)
+                await session.commit()
+        except Exception as e_attr:
+            logging.error(f"Failed to attribute user {user_id} to ad '{ad_start_param}': {e_attr}")
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+                  
     # Send welcome message if not disabled
     if not settings.DISABLE_WELCOME_MESSAGE:
         await message.answer(_(key="welcome", user_name=hd.quote(user.full_name)))
