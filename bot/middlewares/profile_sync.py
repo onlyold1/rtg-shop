@@ -26,9 +26,9 @@ class ProfileSyncMiddleware(BaseMiddleware):
                 if db_user:
                     update_payload: Dict[str, Any] = {}
                     if db_user.username != tg_user.username:
-                    sanitized_username = sanitize_username(tg_user.username)
-                    sanitized_first_name = sanitize_display_name(tg_user.first_name)
-                    sanitized_last_name = sanitize_display_name(tg_user.last_name)
+                        sanitized_username = sanitize_username(tg_user.username)
+                        sanitized_first_name = sanitize_display_name(tg_user.first_name)
+                        sanitized_last_name = sanitize_display_name(tg_user.last_name)
 
                     if db_user.username != sanitized_username:
                         update_payload["username"] = sanitized_username
