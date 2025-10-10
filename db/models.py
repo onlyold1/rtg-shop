@@ -72,6 +72,7 @@ class Subscription(Base):
     last_notification_sent = Column(DateTime(timezone=True), nullable=True)
     provider = Column(String, nullable=True)
     skip_notifications = Column(Boolean, default=False)
+    auto_renew_enabled = Column(Boolean, default=True, index=True)
 
     user = relationship("User", back_populates="subscriptions")
 
@@ -111,6 +112,37 @@ class Payment(Base):
     promo_code_used = relationship("PromoCode",
                                    back_populates="payments_where_used")
 
+
+class UserBilling(Base):
+    __tablename__ = "user_billing"
+
+    user_id = Column(BigInteger, ForeignKey("users.user_id"), primary_key=True)
+    # Saved payment method for off-session recurring charges (YooKassa)
+    yookassa_payment_method_id = Column(String, nullable=True, unique=True)
+    card_last4 = Column(String, nullable=True)
+    card_network = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    user = relationship("User")
+
+class UserPaymentMethod(Base):
+    __tablename__ = "user_payment_methods"
+
+    method_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey("users.user_id"), nullable=False, index=True)
+    provider = Column(String, nullable=False, default="yookassa", index=True)
+    provider_payment_method_id = Column(String, nullable=False, unique=True, index=True)
+    card_last4 = Column(String, nullable=True)
+    card_network = Column(String, nullable=True)
+    is_default = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    user = relationship("User")
+    __table_args__ = (
+        UniqueConstraint('user_id', 'provider_payment_method_id', name='uq_user_provider_method'),
+    )
 
 class PromoCode(Base):
     __tablename__ = "promo_codes"
@@ -195,3 +227,35 @@ class PanelSyncStatus(Base):
     subscriptions_synced = Column(Integer, default=0)
 
     __table_args__ = (UniqueConstraint('id'), )
+
+
+class AdCampaign(Base):
+    __tablename__ = "ad_campaigns"
+
+    ad_campaign_id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String, nullable=False, index=True)
+    start_param = Column(String, nullable=False, unique=True, index=True)
+    cost = Column(Float, nullable=False, default=0.0)
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    attributions = relationship(
+        "AdAttribution",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+    )
+
+    def __repr__(self):
+        return f"<AdCampaign(id={self.ad_campaign_id}, source='{self.source}', start_param='{self.start_param}', cost={self.cost})>"
+
+
+class AdAttribution(Base):
+    __tablename__ = "ad_attributions"
+
+    user_id = Column(BigInteger, ForeignKey("users.user_id"), primary_key=True, index=True)
+    ad_campaign_id = Column(Integer, ForeignKey("ad_campaigns.ad_campaign_id"), nullable=False, index=True)
+    first_start_at = Column(DateTime(timezone=True), server_default=func.now())
+    trial_activated_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User")
+    campaign = relationship("AdCampaign", back_populates="attributions")
