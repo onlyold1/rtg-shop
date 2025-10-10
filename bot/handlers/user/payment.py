@@ -237,15 +237,18 @@ async def process_successful_payment(session: AsyncSession, bot: Bot,
                 "config_link_not_available"
             )
 
-          if applied_referee_bonus_days_from_referral and final_end_date_for_user:
+            if applied_referee_bonus_days_from_referral and final_end_date_for_user:
                 inviter_name_display = _("friend_placeholder")
                 if db_user and db_user.referred_by_id:
                     inviter = await user_dal.get_user_by_id(
                         session, db_user.referred_by_id)
-                    if inviter and inviter.first_name:
-                        inviter_name_display = inviter.first_name
-                    elif inviter and inviter.username:
-                        inviter_name_display = f"@{inviter.username}"
+                    if inviter:
+                        safe_name = sanitize_display_name(inviter.first_name) if inviter.first_name else None
+                        if safe_name:
+                            inviter_name_display = safe_name
+                        elif inviter.username:
+                            inviter_name_display = username_for_display(inviter.username, with_at=False)
+
 
                 details_message = _(
                     "payment_successful_with_referral_bonus_full",
