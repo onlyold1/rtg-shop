@@ -37,6 +37,24 @@ STATUS_EXPIRED = "EXPIRED"
 STATUS_CANCELED = "CANCELED"
 STATUS_FAILED = "FAILED"
 
+PLATEGA_STATUS_CODE_MAP = {
+    1: STATUS_PENDING,     # пример: "создан/в ожидании"
+    7: STATUS_CONFIRMED,   # пример: "успешно оплачено"
+    8: STATUS_EXPIRED,     # пример: "истёк"
+    9: STATUS_CANCELED,    # пример: "отменён"
+    10: STATUS_FAILED,     # пример: "ошибка/отклонён"
+}
+
+def _normalize_platega_status(raw) -> str:
+    if isinstance(raw, int):
+        return PLATEGA_STATUS_CODE_MAP.get(raw, str(raw).upper())
+    if isinstance(raw, str):
+        s = raw.strip().upper()
+        if s.isdigit():
+            return PLATEGA_STATUS_CODE_MAP.get(int(s), s)
+        return s
+    return str(raw).upper()
+
 # Блокировка последовательной обработки входящих вебхуков
 payment_processing_lock = asyncio.Lock()
 
