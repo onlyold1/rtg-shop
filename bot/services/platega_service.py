@@ -530,6 +530,8 @@ async def platega_webhook_route(request: web.Request):
         logging.error(f"Platega webhook: app context missing key: {e}")
         return web.Response(status=500, text="internal_error_missing_context")
 
+    logging.info("Platega webhook HIT")
+    
     recv_merchant = request.headers.get("X-MerchantId")
     recv_secret = request.headers.get("X-Secret")
     expected_merchant = getattr(settings, "PLATEGA_MERCHANT_ID", None)
@@ -551,7 +553,7 @@ async def platega_webhook_route(request: web.Request):
         logging.error("Platega webhook: invalid JSON")
         return web.Response(status=400, text="bad_json")
 
-    status = str(event.get("status") or "").upper()
+    status = _normalize_platega_status(event.get("status"))
     tx_id = str(event.get("id") or "")
 
     if not tx_id:
