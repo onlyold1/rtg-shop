@@ -73,7 +73,7 @@ class PlategaService:
         # Конфигурация
         self.enabled: bool = getattr(settings, "PLATEGA_ENABLED", False)
         self.merchant_id: Optional[str] = getattr(settings, "PLATEGA_MERCHANT_ID", None)
-        self.secret: Optional[str] = getattr(settings, "PLATEGA_SECRET", None)
+        self.secret: Optional[str] = getattr(settings, "PLATEGA_API_SECRET", None)
         self.return_url: Optional[str] = getattr(settings, "PLATEGA_RETURN_URL", None)
         self.failed_url: Optional[str] = getattr(settings, "PLATEGA_FAILED_URL", None)
         self.default_payment_method: int = int(
@@ -515,7 +515,7 @@ async def platega_webhook_route(request: web.Request):
     recv_merchant = request.headers.get("X-MerchantId")
     recv_secret = request.headers.get("X-Secret")
     expected_merchant = getattr(settings, "PLATEGA_MERCHANT_ID", None)
-    expected_secret = getattr(settings, "PLATEGA_SECRET", None)
+    expected_secret = getattr(settings, "PLATEGA_API_SECRET", None)
 
     if not expected_merchant or not expected_secret:
         logging.error("Platega webhook: credentials not configured in settings.")
