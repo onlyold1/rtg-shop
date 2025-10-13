@@ -530,6 +530,8 @@ async def platega_webhook_route(request: web.Request):
         logging.error(f"Platega webhook: app context missing key: {e}")
         return web.Response(status=500, text="internal_error_missing_context")
 
+    import logging
+    logging.warning(f"[WH] HEADERS: {dict(request.headers)}")
     logging.info("Platega webhook HIT")
     
     recv_merchant = request.headers.get("X-MerchantId")
