@@ -368,6 +368,7 @@ async def _process_platega_confirmed(
             session=session,
             user_id=user_id,
             months=months,
+            payment_amount=amount_val,
             payment_db_id=payment_db_id,
             promo_code_id_from_payment=None,
             provider="platega",
@@ -530,7 +531,6 @@ async def platega_webhook_route(request: web.Request):
         return web.Response(status=500, text="internal_error_missing_context")
 
     import logging
-    logging.warning(f"[WH] HEADERS: {dict(request.headers)}")
     logging.info("Platega webhook HIT")
     
     recv_merchant = request.headers.get("X-MerchantId")
