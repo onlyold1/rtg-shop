@@ -368,7 +368,6 @@ async def _process_platega_confirmed(
             session=session,
             user_id=user_id,
             months=months,
-            amount_paid=amount_val,
             payment_db_id=payment_db_id,
             promo_code_id_from_payment=None,
             provider="platega",
