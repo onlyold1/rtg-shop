@@ -537,7 +537,7 @@ async def platega_webhook_route(request: web.Request):
     recv_merchant = request.headers.get("X-MerchantId")
     recv_secret = request.headers.get("X-Secret")
     expected_merchant = getattr(settings, "PLATEGA_MERCHANT_ID", None)
-    expected_secret = getattr(settings, "PLATEGA_SECRET", None)
+    expected_secret = getattr(settings, "PLATEGA_API_SECRET", None)
 
     if not expected_merchant or not expected_secret:
         logging.error("Platega webhook: credentials not configured in settings.")
