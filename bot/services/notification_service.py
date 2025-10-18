@@ -159,6 +159,7 @@ class NotificationService:
         provider_emoji = {
             "yookassa": "💳",
             "cryptopay": "₿",
+            "freekassa": "💳",
             "stars": "⭐",
             "tribute": "💎"
         }.get(payment_provider.lower(), "💰")
