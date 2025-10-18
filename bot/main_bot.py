@@ -205,6 +205,7 @@ async def on_shutdown_configured(dispatcher: Dispatcher):
         "yookassa_service",
         "promo_code_service",
         "stars_service",
+        "freekassa_service",
         "subscription_service",
         "referral_service",
         "platega_service",
