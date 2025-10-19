@@ -15,6 +15,7 @@ from bot.keyboards.inline.user_keyboards import (
 )
 from bot.services.yookassa_service import YooKassaService
 from bot.services.freekassa_service import FreeKassaService
+from bot.services.platega_service import PlategaService
 from bot.services.crypto_pay_service import CryptoPayService
 from bot.services.stars_service import StarsService
 from bot.middlewares.i18n import JsonI18n
@@ -51,6 +52,61 @@ def _format_saved_payment_method_title(get_text, network: Optional[str], last4: 
         title = get_text("payment_method_generic_title", network=network_name)
     return f"⭐ {title}" if is_default else title
 
+@router.callback_query(F.data.startswith("pay_platega:"))
+async def pay_platega_callback_handler(
+    cb: types.CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+):
+    """
+    Запуск платежа через Platega:
+    - парсим месяцы/цену из callback_data
+    - создаём инвойс через сервис
+    - отдаём пользователю кнопку "Оплатить"
+    """
+    try:
+        # Всегда быстро отвечаем, чтобы не «висела» часовая
+        await cb.answer()
+
+        months, price = _parse_months_and_price(cb.data)  # у тебя это уже есть
+        user_id = cb.from_user.id
+
+        platega = PlategaService(settings=settings, session=session)
+
+        payment_description = f"Подписка на {months} мес."
+        # Создаём инвойс в Platega. Предполагаем, что сервис вернёт dict с полями:
+        #     {"payment_url": "...", "invoice_id": "..."} — подстрой под свою реализацию.
+        resp = await platega.create_invoice(
+            user_id=user_id,
+            months=months,
+            amount=price,
+            description=payment_description,
+        )
+
+        payment_url = (resp or {}).get("payment_url")
+        if not payment_url:
+            logging.error("Platega: пустая ссылка на оплату: %r", resp)
+            await cb.message.edit_text(
+                "Не удалось создать платёж в Platega. Попробуйте ещё раз позже.",
+                reply_markup=get_back_to_main_menu_markup(),
+            )
+            return
+
+        # Показываем пользователю кнопку «Перейти к оплате»
+        await cb.message.edit_text(
+            f"Счёт через Platega готов.\nСумма: {price} ₽\nТариф: {months} мес.",
+            reply_markup=get_payment_url_keyboard(payment_url),
+        )
+
+    except Exception as e:
+        logging.exception("Ошибка в pay_platega_callback_handler: %s", e)
+        try:
+            await cb.message.edit_text(
+                "Что-то пошло не так при создании платежа Platega.",
+                reply_markup=get_back_to_main_menu_markup(),
+            )
+        except Exception:
+            pass
 
 async def _initiate_yk_payment(
     callback: types.CallbackQuery,
