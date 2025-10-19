@@ -1,6 +1,6 @@
 services:
   remnawave-tg-shop:
-    image: ghcr.io/onlyold1/rtg-shop:latest
+    image: ghcr.io/onlyold1/rtg-shop:dev
 #    build: .
     container_name: remnawave-tg-shop
     hostname: remnawave-tg-shop
@@ -8,8 +8,8 @@ services:
       - .env
     networks:
       - remnawave-network
-    volumes:
-      - ./locales:/app/locales
+#    volumes:
+ #     - ./locales:/app/locales
     restart: unless-stopped
 
   remnawave-tg-shop-db:
