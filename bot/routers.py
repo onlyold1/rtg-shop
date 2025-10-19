@@ -12,8 +12,9 @@ def build_root_router(settings: Settings) -> Router:
 
     # Allow all updates only in private chats (messages, callback queries, etc.)
     root.message.filter(F.chat.type == "private")
-    root.callback_query.filter(F.message.chat.type == "private")
-
+    root.callback_query.filter(
+        (F.message & (F.message.chat.type == "private")) | (F.inline_message_id != None)
+    )
     # Public routers
     root.include_router(user_router_aggregate)
     root.include_router(inline_mode.router)
