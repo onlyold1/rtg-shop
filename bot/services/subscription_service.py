@@ -737,8 +737,13 @@ class SubscriptionService:
             if panel_user_data.get("expireAt")
             else None
         )
-
+        
+        hwid_limit = panel_user_data.get("hwidDeviceLimit")
+        if hwid_limit is None:
+            hwid_limit = self.settings.USER_HWID_DEVICE_LIMIT
+        
         return {
+            "user_id": panel_user_data.get("uuid"),
             "end_date": panel_end_date,
             "status_from_panel": panel_user_data.get("status", "UNKNOWN").upper(),
             "config_link": panel_user_data.get("subscriptionUrl"),
@@ -746,6 +751,7 @@ class SubscriptionService:
             "traffic_used_bytes": panel_user_data.get("usedTrafficBytes"),
             "user_bot_username": db_user.username,
             "is_panel_data": True,
+            "max_devices": hwid_limit,
         }
 
     async def get_subscriptions_ending_soon(
