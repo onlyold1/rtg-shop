@@ -413,28 +413,5 @@ def get_connect_and_main_keyboard(
         )
     )
 
-def get_autorenew_confirm_keyboard(
-    enable: bool,
-    sub_id: int,
-    lang: str,
-    i18n_instance,
-) -> InlineKeyboardMarkup:
-    _ = lambda key, **kwargs: i18n_instance.gettext(lang, key, **kwargs)
-    builder = InlineKeyboardBuilder()
-
-    # Кнопка подтверждения: прокидываем sub_id и флаг enable (1/0)
-    builder.row(
-        InlineKeyboardButton(
-            text=_(key="confirm_button"),
-            callback_data=f"autorenew:confirm:{sub_id}:{1 if enable else 0}",
-        )
-    )
-    # Отмена — просто вернуться к опциям подписки
-    builder.row(
-        InlineKeyboardButton(
-            text=_(key="cancel_button"),
-            callback_data="main_action:subscribe",
-        )
-    )
                 
     return builder.as_markup()
