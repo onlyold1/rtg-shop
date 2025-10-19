@@ -362,7 +362,6 @@ async def confirm_broadcast_callback_handler(
                 user_queue_size=stats["user_queue_size"],
                 group_queue_size=stats["group_queue_size"],
             )
-        )
         
         result_message = build_queue_status(queue_stats)
 
