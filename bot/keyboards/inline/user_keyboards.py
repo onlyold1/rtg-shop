@@ -121,9 +121,9 @@ def get_terms_selection_keyboard(
         builder.button(text=_(key="back_to_main_menu_button"),
                        callback_data="main_action:back_to_main")
         builder.adjust(1)
+        
         return builder.as_markup()
 
-    return None
 
 
 def get_trial_confirmation_keyboard(lang: str,
