@@ -415,7 +415,7 @@
   "error_creating_payment_record": "Error creating payment record. Please try again later.",
   "error_payment_gateway_link_failed": "Error creating payment link. Please try again later.",
   "status_active": "Active",
-  "status_inactive": "Inactive"
+  "status_inactive": "Inactive",
 
   "admin_ads_not_found": "Campaign not found.",
   "free_kassa_order_full": "Order #{order_id} from {date}\n\n"
