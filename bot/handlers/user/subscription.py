@@ -20,6 +20,13 @@ from bot.services.panel_api_service import PanelApiService
 from bot.services.referral_service import ReferralService
 from bot.middlewares.i18n import JsonI18n
 
+@router.callback_query()
+async def _debug_any_callback(cb: types.CallbackQuery):
+    logging.warning(f"CB ANY: data={cb.data!r}, has_message={bool(cb.message)}, inline_id={cb.inline_message_id!r}")
+    try:
+        await cb.answer()
+    except: pass
+
 router = Router(name="user_subscription_router")
 
 
