@@ -1,10 +1,16 @@
 {
   "welcome": "Welcome, {user_name}!",
+  "channel_subscription_required": "To use the bot, join the channel and tap \"Check subscription\".",
+  "channel_subscription_join_button": "Open channel",
+  "channel_subscription_verify_button": "Check subscription",
+  "channel_subscription_check_failed": "Couldn't verify the subscription. Please try again later or contact support.",
+  "channel_subscription_verified_success": "✅ Subscription confirmed! You're good to go.",
   "main_menu_greeting": "Hi, {user_name}.",
 
   "menu_activate_trial_button": "🆓 Free Trial",
   "menu_subscribe_inline": "🚀 Purchase",
   "menu_my_subscription_inline": "🔐 My Subscription",
+  "no_subscription_options_available": "Subscription issuance is not configured by the bot administrator",
   "menu_referral_inline": "🎁 Referrals",
   "menu_apply_promo_button": "🎟 Promo Code",
   "menu_language_settings_inline": "🌐 Language",
@@ -33,14 +39,37 @@
   "choose_payment_method": "Choose payment method:",
   "pay_button": "💳 Pay",
   "pay_with_yookassa_button": "💳 YooKassa",
+  "yookassa_autopay_flow_prompt": "Auto-renew is enabled. Choose how you'd like to pay:",
+  "yookassa_autopay_pay_saved_card_button": "💳 Pay with saved card",
+  "yookassa_autopay_pay_new_card_button": "➕ Pay with new card",
+  "yookassa_autopay_choose_saved_card": "Choose a saved card to charge:",
+  "yookassa_autopay_no_saved_cards": "No saved cards found. Pay with a new card or link one in Payment Methods.",
+  "back_to_autopay_method_choice_button": "⬅️ Back",
+  "yookassa_autopay_charge_initiated": "Charge request sent to the selected card. We'll notify you once the payment completes.",
+  "pay_with_sbp_button": "📱 SBP",
+  "back_to_payment_methods_button": "⬅️ Back",
   "pay_with_cryptopay_button": "💎 CryptoBot",
   "pay_with_tribute_button": "❤️ Tribute",
   "pay_with_platega_button": "СБП",
   "pay_with_stars_button": "🌟 Telegram Stars",
   "connect_button": "🔗 Connect",
   "cancel_button": "❌ Cancel",
+  
+  "devices_button": "📱 My Devices ({current_devices}/{max_devices})",
+  "my_devices_details": "📱 <b>My Devices ({current_devices}/{max_devices})</b>\n\n{devices}\n\nYou can disconnect a device by selecting it from the list below.\n<blockquote><i>Note: If you disconnect a device, it will be automatically connected again when you use it next. Before deleting, make sure you have deleted the subscription from the application.</i></blockquote>",
+  "no_devices_details_found_message": "📱 <b>My Devices</b>\n\nYou don't have any devices yet.\nYou have {max_devices} devices available. You can connect them by clicking the \"🔗 Connect\" button in the subscription menu.",
+  "device_details": "{index}) <b>{device_model} ({platform} {os_version})</b>\nDate connected: <b>{created_at_str}</b>\nUser Agent: <b>{user_agent}</b>\nHWID: <code>{hwid}</code>",
+  "disconnect_device_button": "🚫 Disconnect {hwid} ({index})",
+  "device_disconnected": "Device disconnected successfully.",
+  "no_devices_found": "Error loading device list.",
+  "devices_unlimited_label": "Unlimited",
+  "my_devices_feature_disabled": "The My Devices section is currently unavailable.",
+
   "payment_description_subscription": "Subscription payment for {months} mo.",
   "payment_link_message": "To pay for {months} mo. subscription, click the button below:",
+  
+  "free_kassa_order_info": "Order #{order_id} from {date}",
+  "payment_invoice_sent_message": "Telegram has sent the invoice above. Complete the payment or pick another method below.",
   "payment_successful_error_details": "✅ Payment succeeded, but an error occurred displaying details. Your subscription is active. Contact support if anything is wrong.",
   "payment_successful_full": "✅ Payment successful!\nYour {months}-month subscription is active until {end_date}.\n\nConnection key:\n<code>{config_link}</code>\n\nTo connect, open the link and follow the instructions 👇",
   "payment_successful_with_referral_bonus_full": "✅ Payment successful!\nYour {months}-month subscription (base end date: {base_end_date}) has been extended by {bonus_days} bonus days for referral from {inviter_name} and is now active until {final_end_date}.\n\nConnection key:\n<code>{config_link}</code>\n\nTo connect, open the link and follow the instructions 👇",
@@ -387,4 +416,7 @@
   "error_payment_gateway_link_failed": "Error creating payment link. Please try again later.",
   "status_active": "Active",
   "status_inactive": "Inactive"
+
+  "admin_ads_not_found": "Campaign not found.",
+  "free_kassa_order_full": "Order #{order_id} from {date}\n\n"
 }
