@@ -25,6 +25,12 @@ from bot.services.promo_code_service import PromoCodeService
 from config.settings import Settings
 from bot.middlewares.i18n import JsonI18n
 from bot.utils.text_sanitizer import sanitize_username, sanitize_display_name
+from bot.utils.callback_helpers import (
+    resolve_i18n_context,
+    safe_answer_callback,
+    safe_edit_message_text,
+    safe_send_message,
+)
 
 router = Router(name="user_start_router")
 
@@ -666,36 +672,53 @@ async def main_action_callback_handler(
         await language_command_handler(callback, i18n_data, settings)
     
     elif action == "terms":
-        current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
-        i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
+        current_lang, i18n, translate = resolve_i18n_context(i18n_data, settings)
 
         if not i18n:
-            await callback.answer("Language service unavailable.", show_alert=True)
+            await safe_answer_callback(
+                callback, translate("error_occurred_try_again"), show_alert=True
+            )
             return
 
-        _ = lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs)
         terms_keyboard = get_terms_selection_keyboard(current_lang, i18n, settings)
 
         if not terms_keyboard:
-            await callback.answer(_(key="terms_not_configured_alert"),
-                                   show_alert=True)
+            await safe_answer_callback(
+                callback, translate("terms_not_configured_alert"), show_alert=True
+            )
             return
 
-        terms_prompt = _(key="terms_select_prompt")
+        message = callback.message
+        if not message:
+            await safe_answer_callback(
+                callback, translate("error_occurred_try_again"), show_alert=True
+            )
+            return
 
-        try:
-            await callback.message.edit_text(terms_prompt,
-                                             reply_markup=terms_keyboard)
-        except Exception:
-            try:
-                await callback.message.answer(terms_prompt,
-                                               reply_markup=terms_keyboard)
-            except Exception:
-                await callback.answer(_(key="error_occurred_try_again"),
-                                       show_alert=True)
+        terms_prompt = translate("terms_select_prompt")
+
+        updated = await safe_edit_message_text(
+            message,
+            terms_prompt,
+            reply_markup=terms_keyboard,
+            disable_web_page_preview=True,
+        )
+
+        if not updated:
+            sent = await safe_send_message(
+                message,
+                terms_prompt,
+                reply_markup=terms_keyboard,
+                disable_web_page_preview=True,
+            )
+
+            if not sent:
+                await safe_answer_callback(
+                    callback, translate("error_occurred_try_again"), show_alert=True
+                )
                 return
 
-        await callback.answer()
+        await safe_answer_callback(callback)
     elif action == "back_to_main":
         await send_main_menu(callback,
                              settings,
