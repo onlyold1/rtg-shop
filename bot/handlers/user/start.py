@@ -17,6 +17,7 @@ from bot.keyboards.inline.user_keyboards import (
     get_main_menu_inline_keyboard,
     get_language_selection_keyboard,
     get_channel_subscription_keyboard,
+    get_terms_selection_keyboard,
 )
 from bot.services.subscription_service import SubscriptionService
 from bot.services.panel_api_service import PanelApiService
