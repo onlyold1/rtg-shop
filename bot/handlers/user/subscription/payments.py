@@ -19,6 +19,11 @@ from bot.services.platega_service import PlategaService, pay_platega_flow
 from bot.services.crypto_pay_service import CryptoPayService
 from bot.services.stars_service import StarsService
 from bot.middlewares.i18n import JsonI18n
+from bot.utils.callback_helpers import (
+    resolve_i18n_context,
+    safe_answer_callback,
+    safe_edit_message_text,
+)
 from db.dal import payment_dal, user_billing_dal
 
 router = Router(name="user_subscription_payments_router")
