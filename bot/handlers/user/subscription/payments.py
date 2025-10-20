@@ -15,7 +15,7 @@ from bot.keyboards.inline.user_keyboards import (
 )
 from bot.services.yookassa_service import YooKassaService
 from bot.services.freekassa_service import FreeKassaService
-from bot.services.platega_service import PlategaService
+from bot.services.platega_service import PlategaService, pay_platega_flow
 from bot.services.crypto_pay_service import CryptoPayService
 from bot.services.stars_service import StarsService
 from bot.middlewares.i18n import JsonI18n
@@ -53,111 +53,50 @@ def _format_saved_payment_method_title(get_text, network: Optional[str], last4: 
     return f"⭐ {title}" if is_default else title
 
 @router.callback_query(F.data.startswith("pay_platega:"))
-async def pay_platega_callback_handler(cb: types.CallbackQuery, settings: Settings, i18n_data: dict, session: AsyncSession, platega_service: PlategaService):
-    get_text = ...  # как у тебя
-    try:
-        await cb.answer()
-    except Exception:
-        pass
-
-    raw = cb.data or ""
-    logging.warning("Platega click: raw_cb_data=%r bytes=%s", raw, len(raw.encode("utf-8")))
-
-    # Снимаем префикс и парсим
-    try:
-        payload = raw.split(":", 1)[1]
-    except Exception:
-        await _platega_reply_parse_error(cb, get_text)
-        return
-
-    months, price, key = parse_platega_payload(f"pay_platega:{payload}")
-    if months is None and key is None:
-        # ни один формат не подошёл
-        await _platega_reply_parse_error(cb, get_text)
-        return
-
-    # если формат с ключом — достанем контекст из стораджа (если ты так делаешь)
-    if key is not None:
+async def pay_platega_callback_handler(
+    cb: types.CallbackQuery,
+    settings: Settings,
+    i18n_data: dict,
+    session: AsyncSession,
+    platega_service: PlategaService,
+):
+    current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
+    i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
+    get_text = (
+        lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs)
+        if i18n
+        else key
+    )
+    if not i18n or not cb.message:
         try:
-            # пример: ctx = await load_payment_context(key)  # реализуй по своему
-            ctx = None
-            if not ctx:
-                raise RuntimeError("missing ctx")
-            months = int(ctx["months"])
-            price = float(ctx["price"])
+            await cb.answer(get_text("error_occurred_try_again"), show_alert=True)
         except Exception:
-            logging.error("Platega: no context for key=%r (cb=%r)", key, raw)
-            await _platega_reply_parse_error(cb, get_text)
-            return
+            pass
+        return
 
-    # к этому моменту months и price гарантированно заданы
-    user_id = cb.from_user.id
-    description = get_text("payment_description_subscription", months=months)
+    if not platega_service or not platega_service.configured:
+        try:
+            await cb.message.edit_text(get_text("payment_service_unavailable"))
+        except Exception:
+            pass
+        try:
+            await cb.answer(get_text("payment_service_unavailable_alert"), show_alert=True)
+        except Exception:
+            pass
+        return
 
-    payment_url: Optional[str] = None
     try:
-        payment_url = await platega_service.create_invoice(
-            session=session,
-            user_id=user_id,
-            months=months,
-            amount_rub=price,
-            description=description,
-        )
+        await pay_platega_flow(cb, i18n_data, settings, platega_service, session)
     except Exception as e:
-        logging.exception("Platega: create_invoice failed: %s", e)
-
-    if not payment_url:
+        logging.error("Error in pay_platega_callback_handler: %s", e, exc_info=True)
         try:
-            await cb.message.edit_text(
-                get_text("error_payment_gateway"),
-                reply_markup=get_back_to_main_menu_markup(),
-            )
+            await cb.message.edit_text(get_text("error_payment_gateway"))
         except Exception:
             pass
-        return
-
-    try:
-        await cb.message.edit_text(
-            get_text("payment_link_message", months=months),
-            reply_markup=get_payment_url_keyboard(
-                payment_url,
-                i18n_data.get("current_language", settings.DEFAULT_LANGUAGE),
-                i18n_data.get("i18n_instance"),
-                back_callback=f"subscribe_period:{months}",
-                back_text_key="back_to_payment_methods_button",
-            ),
-            disable_web_page_preview=False,
-        )
-    except Exception:
         try:
-            await cb.message.answer(
-                get_text("payment_link_message", months=months),
-                reply_markup=get_payment_url_keyboard(
-                    payment_url,
-                    i18n_data.get("current_language", settings.DEFAULT_LANGUAGE),
-                    i18n_data.get("i18n_instance"),
-                    back_callback=f"subscribe_period:{months}",
-                    back_text_key="back_to_payment_methods_button",
-                ),
-                disable_web_page_preview=False,
-            )
+            await cb.answer(get_text("error_try_again"), show_alert=True)
         except Exception:
             pass
-
-async def _platega_reply_parse_error(cb: types.CallbackQuery, get_text):
-    logging.error("Platega: cannot parse callback_data: %r", cb.data)
-    # Можно просто alert, либо перевести на выбор способов оплаты
-    try:
-        await cb.answer(get_text("error_occurred_try_again"), show_alert=True)
-    except Exception:
-        pass
-    try:
-        await cb.message.edit_text(
-            get_text("error_occurred_try_again"),
-            reply_markup=get_back_to_main_menu_markup(),
-        )
-    except Exception:
-        pass
 
 async def _initiate_yk_payment(
     callback: types.CallbackQuery,
