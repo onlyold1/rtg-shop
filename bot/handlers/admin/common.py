@@ -127,6 +127,12 @@ async def admin_panel_actions_callback_handler(
         from . import payments as admin_payments_handlers
         await admin_payments_handlers.view_payments_handler(
             callback, i18n_data, settings, session)
+    elif action == "ads":
+        from . import ads as admin_ads_handlers
+        await admin_ads_handlers.show_ads_menu(callback, settings, i18n_data, session)
+    elif action == "ads_create":
+        from . import ads as admin_ads_handlers
+        await admin_ads_handlers.ads_create_start(callback, state, settings, i18n_data)
     elif action == "main":
         try:
             await callback.message.edit_text(

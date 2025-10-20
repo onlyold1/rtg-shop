@@ -205,6 +205,7 @@ async def on_shutdown_configured(dispatcher: Dispatcher):
         "yookassa_service",
         "promo_code_service",
         "stars_service",
+        "freekassa_service",
         "subscription_service",
         "referral_service",
         "platega_service",
@@ -259,8 +260,9 @@ async def run_bot(settings_param: Settings):
     )
     for key, service in services.items():
         dp[key] = service
-    dp["panel_service"] = services["panel_service"]
-    dp["async_session_factory"] = local_async_session_factory
+        
+        dp["panel_service"] = services["panel_service"]
+        dp["async_session_factory"] = local_async_session_factory
 
     # Wrap startup/shutdown handlers to satisfy aiogram event signature (no args passed)
     async def _on_startup_wrapper():

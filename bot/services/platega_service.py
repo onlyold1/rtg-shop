@@ -37,6 +37,24 @@ STATUS_EXPIRED = "EXPIRED"
 STATUS_CANCELED = "CANCELED"
 STATUS_FAILED = "FAILED"
 
+PLATEGA_STATUS_CODE_MAP = {
+    1: STATUS_PENDING,     # пример: "создан/в ожидании"
+    7: STATUS_CONFIRMED,   # пример: "успешно оплачено"
+    8: STATUS_EXPIRED,     # пример: "истёк"
+    9: STATUS_CANCELED,    # пример: "отменён"
+    10: STATUS_FAILED,     # пример: "ошибка/отклонён"
+}
+
+def _normalize_platega_status(raw) -> str:
+    if isinstance(raw, int):
+        return PLATEGA_STATUS_CODE_MAP.get(raw, str(raw).upper())
+    if isinstance(raw, str):
+        s = raw.strip().upper()
+        if s.isdigit():
+            return PLATEGA_STATUS_CODE_MAP.get(int(s), s)
+        return s
+    return str(raw).upper()
+
 # Блокировка последовательной обработки входящих вебхуков
 payment_processing_lock = asyncio.Lock()
 
@@ -350,7 +368,7 @@ async def _process_platega_confirmed(
             session=session,
             user_id=user_id,
             months=months,
-            amount_paid=amount_val,
+            payment_amount=amount_val,
             payment_db_id=payment_db_id,
             promo_code_id_from_payment=None,
             provider="platega",
@@ -512,6 +530,9 @@ async def platega_webhook_route(request: web.Request):
         logging.error(f"Platega webhook: app context missing key: {e}")
         return web.Response(status=500, text="internal_error_missing_context")
 
+    import logging
+    logging.info("Platega webhook HIT")
+    
     recv_merchant = request.headers.get("X-MerchantId")
     recv_secret = request.headers.get("X-Secret")
     expected_merchant = getattr(settings, "PLATEGA_MERCHANT_ID", None)
@@ -533,7 +554,7 @@ async def platega_webhook_route(request: web.Request):
         logging.error("Platega webhook: invalid JSON")
         return web.Response(status=400, text="bad_json")
 
-    status = str(event.get("status") or "").upper()
+    status = _normalize_platega_status(event.get("status"))
     tx_id = str(event.get("id") or "")
 
     if not tx_id:
@@ -602,7 +623,7 @@ async def pay_platega_flow(
         return
 
     try:
-        _, payload = callback_event.data.split(":", 1)
+        payload = callback_event.data.split(":", 1)[1]
         months_str, price_str = payload.split(":")
         months = int(months_str)
         amount_rub = float(price_str)

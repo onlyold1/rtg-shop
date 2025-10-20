@@ -368,6 +368,18 @@ class PanelApiService:
             "trafficLimitStrategy": default_traffic_limit_strategy.upper(),
             "trafficLimitBytes": default_traffic_limit_bytes,
         }
+        hwid_limit_value = hwid_device_limit
+        if hwid_limit_value is None:
+            hwid_limit_value = self.settings.USER_HWID_DEVICE_LIMIT
+        if hwid_limit_value is not None:
+            try:
+                hwid_limit_int = int(hwid_limit_value)
+                if hwid_limit_int >= 0:
+                    payload["hwidDeviceLimit"] = hwid_limit_int
+            except (TypeError, ValueError):
+                logging.warning(
+                    f"Ignoring invalid HWID device limit '{hwid_limit_value}' while creating panel user '{username_on_panel}'."
+                )        
         if specific_squad_uuids:
             payload["activeInternalSquads"] = specific_squad_uuids
         if telegram_id is not None: payload["telegramId"] = telegram_id
@@ -454,6 +466,31 @@ class PanelApiService:
         if client_type:
             return f"{base_sub_url}/{client_type.lower()}"
         return base_sub_url
+
+
+    async def get_user_devices(self, user_uuid: str) -> Optional[List[Dict[str, Any]]]:
+        endpoint = f"/hwid/devices/{user_uuid}"
+        response_data = await self._request("GET", endpoint, log_full_response=False)
+        if response_data and not response_data.get("error") and "response" in response_data:
+            return response_data.get("response")
+        logging.error(
+            f"Failed to get user devices for user {user_uuid}. Response: {response_data}"
+        )
+        return None
+
+    async def disconnect_device(self, user_uuid: str, hwid: str) -> bool:
+        endpoint = f"/hwid/devices/delete"
+        payload = {
+            "userUuid": user_uuid,
+            "hwid": hwid
+        }
+        response_data = await self._request("POST", endpoint, json=payload, log_full_response=False)
+        if response_data and not response_data.get("error") and "response" in response_data:
+            return True
+        logging.error(
+            f"Failed to disconnect device {hwid} for user {user_uuid}. Payload: {payload}, Response: {response_data}"
+        )
+        return False
 
     async def update_bot_db_sync_status(self,
                                         session: AsyncSession,

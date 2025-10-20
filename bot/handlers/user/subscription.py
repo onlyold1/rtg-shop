@@ -12,14 +12,20 @@ from bot.keyboards.inline.user_keyboards import (
     get_subscription_options_keyboard, get_payment_method_keyboard,
     get_payment_url_keyboard, get_back_to_main_menu_markup)
 from bot.services.yookassa_service import YooKassaService
-from bot.services.platega_service import PlategaService
-from bot.services.platega_service import pay_platega_flow
+from bot.services.platega_service import PlategaService, pay_platega_flow
 from bot.services.stars_service import StarsService
 from bot.services.crypto_pay_service import CryptoPayService
 from bot.services.subscription_service import SubscriptionService
 from bot.services.panel_api_service import PanelApiService
 from bot.services.referral_service import ReferralService
 from bot.middlewares.i18n import JsonI18n
+
+@router.callback_query()
+async def _debug_any_callback(cb: types.CallbackQuery):
+    logging.warning(f"CB ANY: data={cb.data!r}, has_message={bool(cb.message)}, inline_id={cb.inline_message_id!r}")
+    try:
+        await cb.answer()
+    except: pass
 
 router = Router(name="user_subscription_router")
 
@@ -192,128 +198,6 @@ async def pay_stars_callback_handler(
         except Exception:
             pass
         return
-
-    try:
-        await callback.answer()
-    except Exception:
-        pass
-
-@router.callback_query(F.data.startswith("pay_platega:"))
-async def pay_platega_callback_handler(
-    callback: types.CallbackQuery,
-    settings: Settings,
-    i18n_data: dict,
-    platega_service: PlategaService,
-    session: AsyncSession,
-):
-    current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
-    i18n: Optional[JsonI18n] = i18n_data.get("i18n_instance")
-    _ = (lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs)) if i18n else (lambda k, **kw: k)
-
-    if not i18n or not callback.message:
-        try:
-            await callback.answer(_("error_occurred_try_again"), show_alert=True)
-        except Exception:
-            pass
-        return
-
-    # Проверим доступность сервиса/настроек
-    if not platega_service or not getattr(settings, "PLATEGA_ENABLED", True):
-        await callback.message.edit_text(_("payment_service_unavailable"))
-        try:
-            await callback.answer(_("payment_service_unavailable_alert"), show_alert=True)
-        except Exception:
-            pass
-        return
-
-    # Разбираем данные из callback_data: pay_platega:{months}:{price}
-    try:
-        _, months_str = callback_event.data.split(":", 1)
-        months = int(months_str)
-        amount_rub = settings.subscription_options.get(months)
-    except Exception:
-        logging.error(f"Invalid pay_platega data in callback: {callback.data}")
-        try:
-            await callback.answer(_("error_try_again"), show_alert=True)
-        except Exception:
-            pass
-        return
-
-    user_id = callback.from_user.id
-    description = _("payment_description_subscription", months=months)
-
-    # 1) Создаём запись платежа в БД (как у YooKassa), фиксируем провайдера
-    try:
-        db_payment = await payment_dal.create_payment_record(session, {
-            "user_id": user_id,
-            "amount": price_rub,
-            "currency": "RUB",
-            "status": "requires_action",              # Platega возвращает PENDING → наш норм. статус ожидания
-            "description": description,
-            "subscription_duration_months": months,
-            "provider": "platega",
-            "provider_payment_id": None,
-        })
-        await session.commit()
-    except Exception as e:
-        await session.rollback()
-        logging.error(f"DB: failed to create Platega payment record for user {user_id}: {e}", exc_info=True)
-        await callback.message.edit_text(_("error_creating_payment_record"))
-        try:
-            await callback.answer(_("error_try_again"), show_alert=True)
-        except Exception:
-            pass
-        return
-
-    # 2) Создаём транзакцию в Platega и получаем ссылку
-    try:
-        # Внутри PlategaService задайте return/failed URL из Settings (или используйте дефолты)
-        res = await platega_service.create_payment(
-            amount=price_rub,
-            currency="RUB",
-            months=months,
-            description=description,
-            return_url=getattr(settings, "SUBSCRIPTION_MINI_APP_URL", None),
-            failed_url=None,
-            payload=str(db_payment.payment_id),  # пригодится при отладке
-        )
-    except Exception as e:
-        logging.error(f"Platega: create_payment failed for db_id={db_payment.payment_id}: {e}", exc_info=True)
-        try:
-            await payment_dal.update_payment_status_by_db_id(session, db_payment.payment_id, "failed_creation")
-            await session.commit()
-        except Exception:
-            await session.rollback()
-        await callback.message.edit_text(_("error_payment_gateway"))
-        try:
-            await callback.answer(_("error_try_again"), show_alert=True)
-        except Exception:
-            pass
-        return
-
-    # 3) Привяжем внешний id + оставим статус «ожидание»
-    try:
-        if res and getattr(res, "transaction_id", None):
-            await payment_dal.update_provider_payment_and_status(
-                session,
-                payment_db_id=db_payment.payment_id,
-                provider_payment_id=res.transaction_id,
-                new_status="requires_action",
-            )
-            await session.commit()
-    except Exception as e:
-        await session.rollback()
-        logging.error(f"DB: failed to attach provider id for Platega payment {db_payment.payment_id}: {e}", exc_info=True)
-
-    # 4) Отдадим пользователю ссылку на оплату
-    if res and getattr(res, "redirect_url", None):
-        await callback.message.edit_text(
-            _("payment_link_message", months=months),
-            reply_markup=get_payment_url_keyboard(res.redirect_url, current_lang, i18n),
-            disable_web_page_preview=False,
-        )
-    else:
-        await callback.message.edit_text(_("error_payment_gateway"))
 
     try:
         await callback.answer()

@@ -144,7 +144,10 @@ async def perform_sync(panel_service: PanelApiService, session: AsyncSession,
                             existing_user.first_name or "",
                             existing_user.last_name or "",
                         ])
-                        if description_text.strip():
+                        # Update description only when it differs from the current one on panel
+                        current_panel_description = (panel_user_dict.get("description") or "").strip()
+                        desired_description = description_text.strip()
+                        if desired_description and desired_description != current_panel_description:
                             await panel_service.update_user_details_on_panel(
                                 panel_uuid, {"description": description_text}
                             )

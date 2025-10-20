@@ -123,11 +123,12 @@ class I18nMiddleware(BaseMiddleware):
             try:
                 user_db_model = await user_dal.get_user_by_id(
                     session, event_user.id)
-                if user_db_model and user_db_model.language_code and user_db_model.language_code in self.i18n.locales_data:
-                    current_language = user_db_model.language_code
+                if user_db_model and user_db_model.language_code:
+                    lang = user_db_model.language_code.lower().split('-')[0]
+                    if lang in self.i18n.locales_data:
+                        current_language = lang
                 elif event_user.language_code:
-                    lang_prefix = event_user.language_code.split(
-                        '-')[0].lower()
+                    lang_prefix = event_user.language_code.split('-')[0].lower()
                     if lang_prefix in self.i18n.locales_data:
                         current_language = lang_prefix
                     elif event_user.language_code.lower(
