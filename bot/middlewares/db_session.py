@@ -29,10 +29,16 @@ class DBSessionMiddleware(BaseMiddleware):
             try:
                 result = await handler(event, data)
 
-                await session.commit()
+                if session.in_transaction():
+                    if session.new or session.dirty or session.deleted:
+                        await session.commit()
+                    else:
+                        await session.rollback()
+
                 return result
             except Exception:
-                await session.rollback()
+                if session.in_transaction():
+                    await session.rollback()
                 logging.error(
                     "DBSessionMiddleware: Exception caused rollback.", exc_info=True
                 )
