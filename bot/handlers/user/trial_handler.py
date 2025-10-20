@@ -1,6 +1,6 @@
 import logging
 from aiogram import Router, F, types, Bot
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 
@@ -14,7 +14,10 @@ from bot.keyboards.inline.user_keyboards import (
     get_connect_and_main_keyboard,
 )
 from bot.middlewares.i18n import JsonI18n
-from .start import send_main_menu
+
+if TYPE_CHECKING:
+    from .start import send_main_menu
+
 
 router = Router(name="user_trial_router")
 
@@ -172,6 +175,8 @@ async def confirm_activate_trial_handler(
     panel_service: PanelApiService,
     session: AsyncSession,
 ):
+    from .start import send_main_menu as send_main_menu_handler
+    
     user_id = callback.from_user.id
 
     current_lang = i18n_data.get("current_language", settings.DEFAULT_LANGUAGE)
@@ -191,7 +196,7 @@ async def confirm_activate_trial_handler(
         except Exception:
             pass
 
-        await send_main_menu(
+        await send_main_menu_handler(
             callback, settings, i18n_data, subscription_service, session, is_edit=True
         )
         return
@@ -202,7 +207,7 @@ async def confirm_activate_trial_handler(
             )
         except Exception:
             pass
-        await send_main_menu(
+        await send_main_menu_handler(
             callback, settings, i18n_data, subscription_service, session, is_edit=True
         )
         return
@@ -308,6 +313,8 @@ async def cancel_trial_activation(
     subscription_service: SubscriptionService,
     session: AsyncSession,
 ):
-    await send_main_menu(
+    from .start import send_main_menu as send_main_menu_handler
+ 
+    await send_main_menu_handler(
         callback, settings, i18n_data, subscription_service, session, is_edit=True
     )
