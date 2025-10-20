@@ -33,6 +33,12 @@ from bot.utils.callback_helpers import (
     safe_send_message,
 )
 
+from . import subscription as user_subscription_handlers
+from . import referral as user_referral_handlers
+from . import promo_user as user_promo_handlers
+from . import trial_handler as user_trial_handlers
+
+
 router = Router(name="user_start_router")
 
 
