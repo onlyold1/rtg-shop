@@ -341,7 +341,8 @@ class PanelApiService:
             description: Optional[str] = None,
             tag: Optional[str] = None,
             status: str = "ACTIVE",
-            log_response: bool = True) -> Optional[Dict[str, Any]]:
+            log_response: bool = True,
+            hwid_device_limit: Optional[int] = None) -> Optional[Dict[str, Any]]:
 
         if not (6 <= len(username_on_panel) <= 34 and
                 username_on_panel.replace('_', '').replace('-', '').isalnum()):
