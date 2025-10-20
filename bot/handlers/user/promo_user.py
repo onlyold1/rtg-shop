@@ -2,7 +2,7 @@ import logging
 import re
 from aiogram import Router, F, types, Bot
 from aiogram.fsm.context import FSMContext
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.utils.markdown import hcode
 
@@ -17,7 +17,8 @@ from bot.keyboards.inline.user_keyboards import (
 from datetime import datetime
 from bot.middlewares.i18n import JsonI18n
 
-from .start import send_main_menu
+if TYPE_CHECKING:
+    from .start import send_main_menu
 
 router = Router(name="user_promo_router")
 
@@ -185,13 +186,14 @@ async def cancel_promo_input_via_button(
     await state.clear()
 
     if callback.message:
+        from .start import send_main_menu as send_main_menu_handler
 
-        await send_main_menu(callback,
-                             settings,
-                             i18n_data,
-                             subscription_service,
-                             session,
-                             is_edit=True)
+        await send_main_menu_handler(callback,
+                                     settings,
+                                     i18n_data,
+                                     subscription_service,
+                                     session,
+                                     is_edit=True)
     else:
 
         _ = lambda key, **kwargs: i18n.gettext(current_lang, key, **kwargs)
