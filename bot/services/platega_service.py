@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 from aiohttp import web
@@ -30,6 +31,7 @@ _PLATEGA_BASE_URL = "https://app.platega.io"
 _API_CREATE = "/transaction/process"
 _API_STATUS = "/transaction/{transaction_id}"
 _API_RATE = "/rates/payment_method_rate"
+_DEFAULT_TIMEOUT_SECONDS = 30.0
 
 # Возможные статусы от Platega:
 STATUS_PENDING = "PENDING"
@@ -45,6 +47,76 @@ PLATEGA_STATUS_CODE_MAP = {
     9: STATUS_CANCELED,    # пример: "отменён"
     10: STATUS_FAILED,     # пример: "ошибка/отклонён"
 }
+
+def _normalize_base_url(raw_value: Optional[str]) -> str:
+    candidate = (raw_value or "").strip()
+    if not candidate:
+        return _PLATEGA_BASE_URL
+
+    needs_scheme = "://" not in candidate
+    candidate_for_parse = f"https://{candidate}" if needs_scheme else candidate
+
+    try:
+        parsed = urlsplit(candidate_for_parse)
+    except ValueError:
+        logging.warning(
+            "PlategaService: invalid PLATEGA_BASE_URL=%r, falling back to %s",
+            raw_value,
+            _PLATEGA_BASE_URL,
+        )
+        return _PLATEGA_BASE_URL
+
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc
+    path = parsed.path
+
+    if not netloc and path:
+        # urlsplit treats values like "example.com" as a path
+        netloc = path
+        path = ""
+
+    if not netloc:
+        logging.warning(
+            "PlategaService: PLATEGA_BASE_URL=%r missing host, falling back to %s",
+            raw_value,
+            _PLATEGA_BASE_URL,
+        )
+        return _PLATEGA_BASE_URL
+
+    normalized_path = path.rstrip("/")
+    normalized = urlunsplit((scheme, netloc, normalized_path, "", ""))
+
+    return normalized or _PLATEGA_BASE_URL
+
+
+def _format_timeout_label(timeout: Optional[float]) -> str:
+    if timeout is None:
+        return "no timeout"
+    try:
+        value = float(timeout)
+    except (TypeError, ValueError):
+        return str(timeout)
+    if value.is_integer():
+        return f"{int(value)}s"
+    return f"{value:.1f}s"
+
+
+def _resolve_timeout(raw_value: Any) -> Optional[float]:
+    if raw_value is None:
+        return _DEFAULT_TIMEOUT_SECONDS
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        logging.warning(
+            "PlategaService: invalid PLATEGA_TIMEOUT_SECONDS=%r, using default %.1fs",
+            raw_value,
+            _DEFAULT_TIMEOUT_SECONDS,
+        )
+        return _DEFAULT_TIMEOUT_SECONDS
+    if value <= 0:
+        return None
+    return value
+
 
 def _normalize_platega_status(raw) -> str:
     if isinstance(raw, int):
@@ -98,8 +170,21 @@ class PlategaService:
         self.default_payment_method: int = int(
             getattr(settings, "PLATEGA_DEFAULT_METHOD", 2)
         )
-        base_url = getattr(settings, "PLATEGA_BASE_URL", _PLATEGA_BASE_URL) or _PLATEGA_BASE_URL
-        self._base_url: str = base_url.rstrip("/")
+        base_url_raw = getattr(settings, "PLATEGA_BASE_URL", None)
+        self._base_url: str = _normalize_base_url(base_url_raw)
+        logging.debug(
+            "PlategaService: using base URL %s (configured value=%r)",
+            self._base_url,
+            base_url_raw,
+        )
+        timeout_value = getattr(settings, "PLATEGA_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_SECONDS)
+        self._request_timeout: Optional[float] = _resolve_timeout(timeout_value)
+        timeout_total = self._request_timeout
+        if timeout_total is None:
+            self._client_timeout = aiohttp.ClientTimeout(total=None)
+        else:
+            self._client_timeout = aiohttp.ClientTimeout(total=timeout_total)
+        self._api_create_url = self._api_url(_API_CREATE)
     
     # --- Жизненный цикл HTTP-сессии ---
 
@@ -109,8 +194,7 @@ class PlategaService:
 
     async def _ensure_http(self):
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            self._session = aiohttp.ClientSession(timeout=self._client_timeout)
 
     async def close(self):
         if self._session and not self._session.closed:
@@ -120,6 +204,9 @@ class PlategaService:
                 logging.warning(f"PlategaService: error closing session: {e}")
 
     # --- Вспомогательное ---
+
+    def _api_url(self, template: str, **kwargs) -> str:
+        return self._base_url + template.format(**kwargs)
 
     def _auth_headers(self) -> Dict[str, str]:
         return {
@@ -211,7 +298,7 @@ class PlategaService:
 
         try:
             async with self._session.post(
-                self._base_url + _API_CREATE,
+                self._api_create_url,
                 headers=self._auth_headers(),
                 json=body,
             ) as resp:
@@ -227,6 +314,20 @@ class PlategaService:
                         await session.rollback()
                     return None
                 data = json.loads(text)
+        except asyncio.TimeoutError:
+            logging.error(
+                "Platega create_invoice request timed out after %s (POST %s)",
+                _format_timeout_label(self._request_timeout),
+                self._api_create_url,
+            )
+            try:
+                await payment_dal.update_payment_status_by_db_id(
+                    session, db_payment.payment_id, "failed_creation"
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
+            return None
         except Exception as e:
             logging.error(f"Platega create_invoice request failed: {e}", exc_info=True)
             try:
@@ -277,13 +378,20 @@ class PlategaService:
         await self._ensure_http()
         try:
             async with self._session.get(
-                self._base_url + _API_STATUS.format(transaction_id=transaction_id),
+                self._api_url(_API_STATUS, transaction_id=transaction_id),
                 headers=self._auth_headers(),
             ) as resp:
                 if resp.status != 200:
                     logging.warning(f"Platega get_status HTTP {resp.status}")
                     return None
                 return await resp.json()
+        except asyncio.TimeoutError:
+            logging.error(
+                "Platega get_status request timed out after %s (GET %s)",
+                _format_timeout_label(self._request_timeout),
+                self._api_url(_API_STATUS, transaction_id=transaction_id),
+            )
+            return None
         except Exception as e:
             logging.error(f"Platega get_status error: {e}")
             return None
@@ -306,7 +414,7 @@ class PlategaService:
         }
         try:
             async with self._session.get(
-                self._base_url + _API_RATE,
+                self._api_url(_API_RATE),
                 headers=self._auth_headers() | {"accept": "application/json"},
                 params=params,
             ) as resp:
@@ -314,6 +422,13 @@ class PlategaService:
                     logging.warning(f"Platega get_rate HTTP {resp.status}")
                     return None
                 return await resp.json()
+        except asyncio.TimeoutError:
+            logging.error(
+                "Platega get_rate request timed out after %s (GET %s)",
+                _format_timeout_label(self._request_timeout),
+                self._api_url(_API_RATE),
+            )
+            return None                
         except Exception as e:
             logging.error(f"Platega get_rate error: {e}")
             return None
