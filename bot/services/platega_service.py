@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import aiohttp
 from aiohttp import web
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 
@@ -97,7 +98,9 @@ class PlategaService:
         self.default_payment_method: int = int(
             getattr(settings, "PLATEGA_DEFAULT_METHOD", 2)
         )
-
+        base_url = getattr(settings, "PLATEGA_BASE_URL", _PLATEGA_BASE_URL) or _PLATEGA_BASE_URL
+        self._base_url: str = base_url.rstrip("/")
+    
     # --- Жизненный цикл HTTP-сессии ---
 
     @property
@@ -208,7 +211,7 @@ class PlategaService:
 
         try:
             async with self._session.post(
-                _PLATEGA_BASE_URL + _API_CREATE,
+                self._base_url + _API_CREATE,
                 headers=self._auth_headers(),
                 json=body,
             ) as resp:
@@ -274,7 +277,7 @@ class PlategaService:
         await self._ensure_http()
         try:
             async with self._session.get(
-                _PLATEGA_BASE_URL + _API_STATUS.format(transaction_id=transaction_id),
+                self._base_url + _API_STATUS.format(transaction_id=transaction_id),
                 headers=self._auth_headers(),
             ) as resp:
                 if resp.status != 200:
@@ -303,7 +306,7 @@ class PlategaService:
         }
         try:
             async with self._session.get(
-                _PLATEGA_BASE_URL + _API_RATE,
+                self._base_url + _API_RATE,
                 headers=self._auth_headers() | {"accept": "application/json"},
                 params=params,
             ) as resp:
@@ -662,7 +665,18 @@ async def pay_platega_flow(
                 disable_web_page_preview=False,
             )
     else:
-        await callback_event.message.edit_text(_("error_payment_gateway"))
+        try:
+            await callback_event.message.edit_text(_("error_payment_gateway"))
+        except TelegramBadRequest as exc:
+            error_message = getattr(exc, "message", str(exc)) or ""
+            if "message is not modified" in error_message.lower():
+                logging.debug("pay_platega: message already contains error text, skipping edit")
+            else:
+                logging.warning(f"pay_platega: edit_text failed: {exc}; sending new message")
+                await callback_event.message.answer(_("error_payment_gateway"))
+        except Exception as exc:
+            logging.warning(f"pay_platega: edit_text failed: {exc}; sending new message")
+            await callback_event.message.answer(_("error_payment_gateway"))
 
     try:
         await callback_event.answer()
