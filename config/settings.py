@@ -35,13 +35,6 @@ class Settings(BaseSettings):
     PLATEGA_API_SECRET: Optional[str] = None
     PLATEGA_BASE_URL: str = Field(default="https://app.platega.io")
     PLATEGA_ENABLED: bool = Field(default=False)
-    PLATEGA_TIMEOUT_SECONDS: Optional[float] = Field(
-        default=30.0,
-        description=(
-            "Timeout in seconds for Platega HTTP requests."
-            " Set to 0 or a negative value to disable the limit."
-        ),
-    )
 
     YOOKASSA_SHOP_ID: Optional[str] = None
     YOOKASSA_SECRET_KEY: Optional[str] = None
