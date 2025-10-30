@@ -378,8 +378,8 @@ async def _process_platega_confirmed(
 
         referral_info = await referral_service.apply_referral_bonuses_for_payment(
             session=session,
-            user_id=user_id,
-            months=months,
+            referee_user_id=user_id,
+            purchased_subscription_months=months,
             current_payment_db_id=payment_db_id,
             skip_if_active_before_payment=False,
         )
