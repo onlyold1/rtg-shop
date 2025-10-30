@@ -178,45 +178,58 @@ class PanelWebhookService:
 
         async with self.async_session_factory() as session:
             db_user = await user_dal.get_user_by_id(session, user_id)
-            lang = db_user.language_code if db_user and db_user.language_code else self.settings.DEFAULT_LANGUAGE
-            first_name = db_user.first_name or f"User {user_id}" if db_user else f"User {user_id}"
-
-        markup = get_subscribe_only_markup(lang, self.i18n)
-
-        if event_name in EVENT_MAP:
-            days_left, msg_key = EVENT_MAP[event_name]
-            if days_left <= self.settings.SUBSCRIPTION_NOTIFY_DAYS_BEFORE:
-                await self._send_message(
-                    user_id,
-                    lang,
-                    msg_key,
-                    reply_markup=markup,
-                    user_name=first_name,
-                    end_date=user_payload.get("expireAt", "")[:10],
-                )
-        elif event_name == "user.expired":
-            # Check if this is a tribute user that should be auto-renewed (regardless of notification settings)
-            auto_renewed = await self._handle_expired_subscription(session, user_id, user_payload, lang, markup, first_name)
-            
-            # If auto-renewed via Tribute, suppress expiration notification. Otherwise, send it if enabled.
-            if not auto_renewed and self.settings.SUBSCRIPTION_NOTIFY_ON_EXPIRE:
-                await self._send_message(
-                    user_id,
-                    lang,
-                    "subscription_expired_notification",
-                    reply_markup=markup,
-                    user_name=first_name,
-                    end_date=user_payload.get("expireAt", "")[:10],
-                )
-        elif event_name == "user.expired_24_hours_ago" and self.settings.SUBSCRIPTION_NOTIFY_AFTER_EXPIRE:
-            await self._send_message(
-                user_id,
-                lang,
-                "subscription_expired_yesterday_notification",
-                reply_markup=markup,
-                user_name=first_name,
-                end_date=user_payload.get("expireAt", "")[:10],
+            lang = (
+                db_user.language_code
+                if db_user and db_user.language_code
+                else self.settings.DEFAULT_LANGUAGE
             )
+            first_name = (
+                db_user.first_name or f"User {user_id}"
+                if db_user
+                else f"User {user_id}"
+            )
+
+            markup = get_subscribe_only_markup(lang, self.i18n)
+
+            if event_name in EVENT_MAP:
+                days_left, msg_key = EVENT_MAP[event_name]
+                if days_left <= self.settings.SUBSCRIPTION_NOTIFY_DAYS_BEFORE:
+                    await self._send_message(
+                        user_id,
+                        lang,
+                        msg_key,
+                        reply_markup=markup,
+                        user_name=first_name,
+                        end_date=user_payload.get("expireAt", "")[:10],
+                    )
+            elif event_name == "user.expired":
+                # Check if this is a tribute user that should be auto-renewed (regardless of notification settings)
+                auto_renewed = await self._handle_expired_subscription(
+                    session, user_id, user_payload, lang, markup, first_name
+                )
+
+                # If auto-renewed via Tribute, suppress expiration notification. Otherwise, send it if enabled.
+                if not auto_renewed and self.settings.SUBSCRIPTION_NOTIFY_ON_EXPIRE:
+                    await self._send_message(
+                        user_id,
+                        lang,
+                        "subscription_expired_notification",
+                        reply_markup=markup,
+                        user_name=first_name,
+                        end_date=user_payload.get("expireAt", "")[:10],
+                    )
+            elif (
+                event_name == "user.expired_24_hours_ago"
+                and self.settings.SUBSCRIPTION_NOTIFY_AFTER_EXPIRE
+            ):
+                await self._send_message(
+                    user_id,
+                    lang,
+                    "subscription_expired_yesterday_notification",
+                    reply_markup=markup,
+                    user_name=first_name,
+                    end_date=user_payload.get("expireAt", "")[:10],
+                )
 
     async def handle_webhook(self, raw_body: bytes, signature_header: Optional[str]) -> web.Response:
         if self.settings.PANEL_WEBHOOK_SECRET:
